@@ -1,0 +1,37 @@
+# Build
+/_build/
+
+# Dependencies
+/deps/
+
+# Coverage
+/cover/
+
+# Docs
+/doc/
+
+# Crash dump
+erl_crash.dump
+
+# Archives
+*.ez
+
+# Package tarball
+splitio-*.tar
+
+# Temp
+/tmp/
+
+# IDE
+.elixir_ls/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dialyzer
+/priv/plts/
