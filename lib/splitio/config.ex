@@ -59,6 +59,24 @@ defmodule Splitio.Config do
     ip_addresses_enabled: true
   ]
 
+  @doc """
+  Read config from Application environment.
+
+  Reads all configuration from `config :splitio, ...` in your config files.
+  Returns `nil` if `:api_key` is not configured.
+  """
+  @spec from_env() :: {:ok, t()} | nil
+  def from_env do
+    opts = Application.get_all_env(:splitio)
+    api_key = Keyword.get(opts, :api_key)
+
+    if is_nil(api_key) or api_key == "" do
+      nil
+    else
+      new(opts)
+    end
+  end
+
   @doc "Create config from keyword list"
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) when is_list(opts) do

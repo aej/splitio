@@ -2,12 +2,24 @@ defmodule Splitio do
   @moduledoc """
   Split.io feature flag SDK for Elixir.
 
-  ## Quick Start
+  ## Setup
 
-      # Start the SDK (usually in application.ex)
-      Splitio.start(api_key: "your-api-key")
+  1. Configure in your config files:
 
-      # Wait for SDK to be ready
+      # config/config.exs
+      config :splitio,
+        api_key: "your-sdk-key"
+
+  2. Add to your supervision tree:
+
+      children = [
+        # ... other children
+        Splitio
+      ]
+
+  ## Usage
+
+      # Wait for SDK to be ready (optional)
       :ok = Splitio.block_until_ready(10_000)
 
       # Get treatment
@@ -30,7 +42,7 @@ defmodule Splitio do
 
   """
 
-  alias Splitio.{Config, Key, Storage}
+  alias Splitio.{Key, Storage}
   alias Splitio.Engine.Evaluator
   alias Splitio.Models.{EvaluationResult, Impression, Event}
   alias Splitio.Sync.Manager, as: SyncManager
@@ -41,48 +53,57 @@ defmodule Splitio do
   @type evaluation_options :: keyword()
 
   # ============================================================================
-  # Lifecycle
+  # Supervision
   # ============================================================================
 
   @doc """
-  Start the Split SDK with configuration.
+  Returns a child specification for the SDK supervisor.
 
-  This starts the SDK supervisor with sync processes.
+  Add this to your application's supervision tree:
 
-  ## Options
+      children = [
+        # ... other children
+        Splitio
+      ]
 
-  - `:api_key` - Required. Your Split SDK key.
-  - `:mode` - Operation mode: `:standalone` (default) or `:localhost`
-  - `:streaming_enabled` - Enable SSE streaming (default: true)
-  - See `Splitio.Config` for all options.
+      Supervisor.start_link(children, strategy: :one_for_one)
 
-  ## Example
-
-      Splitio.start(api_key: "sdk-xxx", impressions_mode: :optimized)
-
+  Configuration is read from Application env (see moduledoc).
   """
-  @spec start(keyword()) :: :ok | {:error, term()}
-  def start(opts) do
-    case Config.new(opts) do
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(_opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, []},
+      type: :supervisor
+    }
+  end
+
+  @doc false
+  def start_link do
+    case Splitio.Config.from_env() do
       {:ok, config} ->
-        # Store config for later use
         Application.put_env(:splitio, :config, config)
 
-        # Start dynamic processes
-        children = build_children(config)
+        children = [
+          Splitio.Storage.TableOwner,
+          {Splitio.Impressions.Counter, []},
+          {Splitio.Recorder.Impressions, config},
+          {Splitio.Recorder.Events, config},
+          {Splitio.Recorder.ImpressionCounts, config},
+          {Splitio.Sync.Manager, config}
+        ]
 
-        case Supervisor.start_link(children,
-               strategy: :one_for_one,
-               name: Splitio.DynamicSupervisor
-             ) do
-          {:ok, _pid} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
+        Supervisor.start_link(children, strategy: :one_for_one, name: Splitio.Supervisor)
 
-      {:error, reason} ->
-        {:error, reason}
+      nil ->
+        {:error, :api_key_required}
     end
   end
+
+  # ============================================================================
+  # Lifecycle
+  # ============================================================================
 
   @doc """
   Check if the SDK is ready for evaluations.
@@ -104,31 +125,6 @@ defmodule Splitio do
   @spec block_until_ready(non_neg_integer()) :: :ok | {:error, :timeout}
   def block_until_ready(timeout_ms \\ 10_000) do
     SyncManager.block_until_ready(timeout_ms)
-  end
-
-  @doc """
-  Gracefully shut down the SDK.
-
-  Flushes all pending impressions and events.
-  """
-  @spec destroy() :: :ok
-  def destroy do
-    # Flush recorders
-    try do
-      Impressions.flush()
-      Events.flush()
-    catch
-      :exit, _ -> :ok
-    end
-
-    # Stop supervisor
-    try do
-      Supervisor.stop(Splitio.DynamicSupervisor)
-    catch
-      :exit, _ -> :ok
-    end
-
-    :ok
   end
 
   # ============================================================================
@@ -336,19 +332,6 @@ defmodule Splitio do
   # ============================================================================
   # Private
   # ============================================================================
-
-  defp build_children(config) do
-    base = [
-      {Splitio.Impressions.Counter, []},
-      {Splitio.Recorder.Impressions, config},
-      {Splitio.Recorder.Events, config},
-      {Splitio.Recorder.ImpressionCounts, config},
-      {Splitio.Sync.Manager, config}
-    ]
-
-    # TODO: Add streaming processes when implemented
-    base
-  end
 
   defp record_impression(key, split_name, %EvaluationResult{} = result, opts) do
     properties = Keyword.get(opts, :properties)

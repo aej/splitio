@@ -25,11 +25,40 @@ end
 
 ## Quick Start
 
-```elixir
-# Start the SDK
-Splitio.start(api_key: "your-sdk-key")
+**1. Configure the SDK** in your config files:
 
-# Wait for SDK to be ready
+```elixir
+# config/config.exs
+config :splitio,
+  api_key: "your-sdk-key"
+```
+
+Or use runtime config for environment variables:
+
+```elixir
+# config/runtime.exs
+config :splitio,
+  api_key: System.fetch_env!("SPLIT_API_KEY")
+```
+
+**2. Add to your supervision tree** in `lib/my_app/application.ex`:
+
+```elixir
+def start(_type, _args) do
+  children = [
+    # ... other children
+    Splitio
+  ]
+
+  opts = [strategy: :one_for_one, name: MyApp.Supervisor]
+  Supervisor.start_link(children, opts)
+end
+```
+
+**3. Use feature flags** in your application:
+
+```elixir
+# Wait for SDK to be ready (optional, e.g., at startup)
 :ok = Splitio.block_until_ready(10_000)
 
 # Get treatment
@@ -46,15 +75,15 @@ end
 
 # Track events
 Splitio.track("user123", "user", "purchase", 99.99, %{item: "widget"})
-
-# Shutdown
-Splitio.destroy()
 ```
 
 ## Configuration
 
+All options go under the `:splitio` application config:
+
 ```elixir
-Splitio.start(
+# config/config.exs
+config :splitio,
   api_key: "your-sdk-key",
   mode: :standalone,              # :standalone | :localhost
   streaming_enabled: true,        # Enable SSE streaming
@@ -62,7 +91,6 @@ Splitio.start(
   features_refresh_rate: 30,      # Seconds between split fetches
   segments_refresh_rate: 60,      # Seconds between segment fetches
   labels_enabled: true            # Include labels in impressions
-)
 ```
 
 ### Localhost Mode
@@ -70,11 +98,11 @@ Splitio.start(
 For development/testing without Split.io backend:
 
 ```elixir
-Splitio.start(
+# config/dev.exs
+config :splitio,
   api_key: "localhost",
   mode: :localhost,
   split_file: "config/splits.yaml"
-)
 ```
 
 YAML format:
