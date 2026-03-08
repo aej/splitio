@@ -2,7 +2,7 @@ defmodule Splitio.Api.Client do
   @moduledoc """
   HTTP client wrapper for Split API requests.
 
-  Uses Req for HTTP requests with proper headers and error handling.
+  Routes through configurable HTTP backend (defaults to Req).
   """
 
   alias Splitio.Config
@@ -18,23 +18,14 @@ defmodule Splitio.Api.Client do
     headers = build_headers(config, opts)
     query = Keyword.get(opts, :query, [])
 
-    req_opts = [
+    http_opts = [
       headers: headers,
       params: query,
       receive_timeout: config.read_timeout,
-      connect_options: [timeout: config.connection_timeout]
+      connect_timeout: config.connection_timeout
     ]
 
-    case Req.get(url, req_opts) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        {:ok, body}
-
-      {:ok, %Req.Response{status: status}} ->
-        {:error, {:http_error, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    http_client().get(url, http_opts)
   end
 
   @doc "Make a POST request to Split API"
@@ -43,22 +34,19 @@ defmodule Splitio.Api.Client do
     url = base_url <> path
     headers = build_headers(config, opts)
 
-    req_opts = [
+    http_opts = [
       headers: headers,
-      json: body,
       receive_timeout: config.read_timeout,
-      connect_options: [timeout: config.connection_timeout]
+      connect_timeout: config.connection_timeout
     ]
 
-    case Req.post(url, req_opts) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        {:ok, body}
+    http_client().post(url, body, http_opts)
+  end
 
-      {:ok, %Req.Response{status: status}} ->
-        {:error, {:http_error, status}}
-
-      {:error, reason} ->
-        {:error, reason}
+  defp http_client do
+    case Process.get(:splitio_http_client) do
+      nil -> Application.get_env(:splitio, :http_client, Splitio.Api.HTTP.Req)
+      client -> client
     end
   end
 
