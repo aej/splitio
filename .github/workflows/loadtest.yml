@@ -1,0 +1,47 @@
+name: Load Test
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, opened, synchronize, reopened]
+
+jobs:
+  loadtest:
+    name: Run Load Tests
+    runs-on: ubuntu-latest
+    # Only run when 'loadtest' label is present
+    if: contains(github.event.pull_request.labels.*.name, 'loadtest')
+
+    env:
+      MIX_ENV: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.0'
+          elixir-version: '1.18'
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile
+
+      - name: Run load test (impressions optimized)
+        run: mix loadtest --sustained --ci
+
+      - name: Run load test (impressions none)
+        run: mix loadtest --sustained --impressions none --ci

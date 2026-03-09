@@ -29,7 +29,8 @@ defmodule Splitio.MixProject do
       {:yaml_elixir, "~> 2.9"},
       {:telemetry, "~> 1.2"},
       {:nimble_options, "~> 1.1"},
-      {:mox, "~> 1.1", only: :test}
+      {:mox, "~> 1.1", only: :test},
+      {:benchee, "~> 1.3", only: [:dev, :test]}
     ]
   end
 end
