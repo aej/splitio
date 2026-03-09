@@ -12,7 +12,7 @@ defmodule Splitio.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "test/integration"]
   defp elixirc_paths(_), do: ["lib"]
 
   def application do

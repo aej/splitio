@@ -1,0 +1,51 @@
+name: Integration Test
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, opened, synchronize, reopened]
+
+jobs:
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Only run when 'integration' label is present
+    if: contains(github.event.pull_request.labels.*.name, 'integration')
+    timeout-minutes: 20
+
+    env:
+      MIX_ENV: test
+      SPLIT_SDK_KEY: ${{ secrets.SPLIT_SDK_KEY }}
+      SPLIT_ADMIN_KEY: ${{ secrets.SPLIT_ADMIN_KEY }}
+      SPLIT_WORKSPACE_ID: ${{ secrets.SPLIT_WORKSPACE_ID }}
+      SPLIT_ENVIRONMENT_ID: ${{ secrets.SPLIT_ENVIRONMENT_ID }}
+      SPLIT_ENVIRONMENT_NAME: ${{ secrets.SPLIT_ENVIRONMENT_NAME }}
+      SPLIT_TRAFFIC_TYPE: user
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.0'
+          elixir-version: '1.18'
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile
+
+      - name: Run integration tests
+        run: mix test --only integration

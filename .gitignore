@@ -1,4 +1,4 @@
-# Build
+.# Build
 /_build/
 
 # Dependencies
@@ -38,3 +38,7 @@ Thumbs.db
 
 # Benchmark results
 /bench/results/
+
+# Environment files (contain secrets)
+.env
+.env.local

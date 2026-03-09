@@ -171,10 +171,35 @@ mix loadtest --sustained --ci
 | 100-process sustained | optimized | ~34K ops/sec | - |
 | 100-process sustained | none | ~178K ops/sec | - |
 
+### Integration Tests
+
+Integration tests run against the real Split.io API. They require credentials:
+
+```bash
+# Copy example env and fill in values
+cp .env.example .env
+
+# Source the env file
+source .env
+
+# Run integration tests
+mix test --only integration
+```
+
+Required environment variables (see `.env.example`):
+- `SPLIT_SDK_KEY` - SDK API key for the test environment
+- `SPLIT_ADMIN_KEY` - Admin API key (for creating test fixtures)
+- `SPLIT_WORKSPACE_ID` - Workspace/Project ID
+- `SPLIT_ENVIRONMENT_ID` - Environment ID
+- `SPLIT_ENVIRONMENT_NAME` - Environment name
+
 ### CI Workflows
 
 - **Test**: Runs on all PRs to `main` - compiles, tests, format check
-- **Load Test**: Runs when `loadtest` label is added to PR - checks performance thresholds
+- **Load Test**: Runs when `loadtest` label added - checks performance thresholds
+- **Integration Test**: Runs when `integration` label added - tests against real Split.io API
+
+All three checks must pass before merging to `main`.
 
 ## License
 
