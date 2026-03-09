@@ -1,5 +1,8 @@
 # Splitio
 
+[![Test](https://github.com/aej/splitio/actions/workflows/test.yml/badge.svg)](https://github.com/aej/splitio/actions/workflows/test.yml)
+[![Load Test](https://github.com/aej/splitio/actions/workflows/loadtest.yml/badge.svg)](https://github.com/aej/splitio/actions/workflows/loadtest.yml)
+
 Elixir SDK for [Split.io](https://split.io) feature flags with local evaluation.
 
 ## Features
@@ -127,6 +130,51 @@ split = Splitio.Manager.split("my_feature")
 # Get split names
 names = Splitio.Manager.split_names()
 ```
+
+## Development
+
+### Running Tests
+
+```bash
+mix test
+```
+
+### Load Testing
+
+Run load tests to benchmark SDK performance:
+
+```bash
+# Quick benchmark
+mix loadtest --quick
+
+# Full benchmark suite
+mix loadtest
+
+# Sustained load test only
+mix loadtest --sustained --processes 100 --duration 10
+
+# Test with impressions disabled (fastest)
+mix loadtest --quick --impressions none
+
+# CI mode (checks against thresholds, exits non-zero on failure)
+mix loadtest --sustained --ci
+```
+
+### Performance Baselines
+
+| Scenario | Impressions Mode | Throughput | Latency |
+|----------|------------------|------------|---------|
+| `get_treatment` (simple) | optimized | ~35K ops/sec | ~29us |
+| `get_treatment` (segment) | optimized | ~23K ops/sec | ~44us |
+| `get_treatment` (random) | optimized | ~18K ops/sec | ~55us |
+| `track` | - | ~32K ops/sec | ~31us |
+| 100-process sustained | optimized | ~34K ops/sec | - |
+| 100-process sustained | none | ~178K ops/sec | - |
+
+### CI Workflows
+
+- **Test**: Runs on all PRs to `main` - compiles, tests, format check
+- **Load Test**: Runs when `loadtest` label is added to PR - checks performance thresholds
 
 ## License
 
