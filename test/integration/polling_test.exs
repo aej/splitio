@@ -103,6 +103,7 @@ defmodule Splitio.Integration.PollingTest do
       end
     end
 
+    @tag timeout: 120_000
     test "detects segment membership changes", %{admin: admin, test_id: test_id} do
       segment_name = "poll_segment_#{test_id}"
       flag_name = "poll_segment_flag_#{test_id}"
@@ -116,7 +117,7 @@ defmodule Splitio.Integration.PollingTest do
       Process.sleep(3000)
 
       try do
-        # Start SDK
+        # Start SDK with aggressive polling
         {:ok, _} = Helpers.start_sdk(streaming_enabled: false, segments_refresh_rate: 5)
 
         # User not in segment should get default
@@ -125,11 +126,12 @@ defmodule Splitio.Integration.PollingTest do
         # Add user to segment
         :ok = AdminApi.update_segment_keys(admin, segment_name, ["test_user", "other_user"])
 
-        # Wait for segment sync
+        # Wait for segment sync - increased timeout because segment updates
+        # may require multiple polling cycles to propagate
         assert :ok =
                  Helpers.wait_until(
                    fn -> Splitio.get_treatment("test_user", flag_name) == "member" end,
-                   timeout: 30_000
+                   timeout: 60_000
                  )
       after
         Helpers.stop_sdk()

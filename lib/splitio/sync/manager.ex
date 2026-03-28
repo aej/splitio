@@ -163,8 +163,18 @@ defmodule Splitio.Sync.Manager do
 
   defp do_sync_all(config) do
     case Splits.sync(config) do
-      {:ok, segment_names} ->
-        Segments.sync_segments(config, segment_names)
+      {:ok, new_segment_names} ->
+        # Sync both newly discovered segments and previously known segments
+        # This ensures segment membership changes are detected even when
+        # splits haven't changed
+        existing_segment_names = Splitio.Storage.get_segment_names()
+
+        all_segment_names =
+          MapSet.new(new_segment_names)
+          |> MapSet.union(MapSet.new(existing_segment_names))
+          |> MapSet.to_list()
+
+        Segments.sync_segments(config, all_segment_names)
         :ok
 
       {:error, reason} ->

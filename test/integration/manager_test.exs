@@ -34,7 +34,7 @@ defmodule Splitio.Integration.ManagerTest do
 
         for split <- our_splits do
           assert is_binary(split.name)
-          assert split.traffic_type_name == "user"
+          assert split.traffic_type == "user"
           assert is_list(split.treatments)
         end
       after
@@ -65,7 +65,7 @@ defmodule Splitio.Integration.ManagerTest do
 
         assert split != nil
         assert split.name == flag_name
-        assert split.traffic_type_name == "user"
+        assert split.traffic_type == "user"
         assert "enabled" in split.treatments
         assert split.default_treatment == "disabled"
         assert split.configs["enabled"] == config

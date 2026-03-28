@@ -163,11 +163,13 @@ defmodule Splitio.Integration.AdminApi do
   def create_segment(%__MODULE__{} = client, name, opts \\ []) do
     description = Keyword.get(opts, :description, "Integration test segment")
 
-    url = "#{@base_url}/segments/#{client.workspace_id}/trafficTypes/#{client.traffic_type}"
+    url = "#{@base_url}/segments/ws/#{client.workspace_id}/trafficTypes/#{client.traffic_type}"
 
     body = %{
       "name" => name,
-      "description" => description
+      "description" => description,
+      # Harness requires owners - use a dummy group ID
+      "owners" => [%{"type" => "group", "id" => "00000000-0000-0000-0000-000000000000"}]
     }
 
     case post(client, url, body) do
@@ -181,8 +183,8 @@ defmodule Splitio.Integration.AdminApi do
   @doc "Enable segment in environment"
   @spec enable_segment(t(), String.t()) :: :ok | {:error, term()}
   def enable_segment(%__MODULE__{} = client, name) do
-    url =
-      "#{@base_url}/segments/#{client.workspace_id}/#{name}/environments/#{client.environment_name}"
+    # API: POST /segments/{environment-id}/{segment-name}
+    url = "#{@base_url}/segments/#{client.environment_id}/#{name}"
 
     case post(client, url, %{}) do
       {:ok, _} -> :ok
@@ -194,7 +196,12 @@ defmodule Splitio.Integration.AdminApi do
 
   @doc "Update segment keys (add members)"
   @spec update_segment_keys(t(), String.t(), [String.t()], keyword()) :: :ok | {:error, term()}
-  def update_segment_keys(%__MODULE__{} = client, name, keys, opts \\ []) do
+  def update_segment_keys(%__MODULE__{} = _client, _name, [], _opts) do
+    # API rejects empty keys array, skip the call
+    :ok
+  end
+
+  def update_segment_keys(%__MODULE__{} = client, name, keys, opts) when keys != [] do
     replace = Keyword.get(opts, :replace, false)
 
     url =
@@ -209,6 +216,11 @@ defmodule Splitio.Integration.AdminApi do
       {:ok, _} -> :ok
       error -> error
     end
+  end
+
+  # 3-arity version with default opts
+  def update_segment_keys(client, name, keys) do
+    update_segment_keys(client, name, keys, [])
   end
 
   @doc "Remove keys from segment"
@@ -230,8 +242,8 @@ defmodule Splitio.Integration.AdminApi do
   @doc "Deactivate segment in environment"
   @spec deactivate_segment(t(), String.t()) :: :ok | {:error, term()}
   def deactivate_segment(%__MODULE__{} = client, name) do
-    url =
-      "#{@base_url}/segments/#{client.workspace_id}/#{name}/environments/#{client.environment_name}"
+    # API: DELETE /segments/{environment-id}/{segment-name}
+    url = "#{@base_url}/segments/#{client.environment_id}/#{name}"
 
     case delete(client, url) do
       {:ok, _} -> :ok
@@ -243,7 +255,7 @@ defmodule Splitio.Integration.AdminApi do
   @doc "Delete a segment entirely"
   @spec delete_segment(t(), String.t()) :: :ok | {:error, term()}
   def delete_segment(%__MODULE__{} = client, name) do
-    url = "#{@base_url}/segments/#{client.workspace_id}/#{name}"
+    url = "#{@base_url}/segments/ws/#{client.workspace_id}/#{name}"
 
     case delete(client, url) do
       {:ok, _} -> :ok
@@ -271,12 +283,16 @@ defmodule Splitio.Integration.AdminApi do
     default_treatment = Keyword.get(opts, :default_treatment, "off")
     config = Keyword.get(opts, :config)
 
+    # Build treatment entry, only include configurations if present
+    treatment_entry =
+      if config do
+        %{"name" => treatment, "configurations" => config}
+      else
+        %{"name" => treatment}
+      end
+
     treatments =
-      [
-        %{"name" => treatment, "configurations" => config},
-        %{"name" => default_treatment}
-      ]
-      |> Enum.reject(fn t -> t["name"] == treatment and is_nil(config) end)
+      [treatment_entry, %{"name" => default_treatment}]
       |> Enum.uniq_by(& &1["name"])
 
     %{
@@ -306,43 +322,39 @@ defmodule Splitio.Integration.AdminApi do
     }
   end
 
-  @doc "Build a whitelist rule definition"
+  @doc "Build a whitelist rule definition using treatment-level keys"
   def whitelist_rule(keys, treatment, opts \\ []) do
     default_treatment = Keyword.get(opts, :default_treatment, "off")
 
-    %{
-      "treatments" => [
-        %{"name" => treatment},
+    # Admin API uses keys on treatment level, not rule-based conditions
+    treatments =
+      [
+        %{"name" => treatment, "keys" => keys},
         %{"name" => default_treatment}
-      ],
+      ]
+      |> Enum.uniq_by(& &1["name"])
+
+    %{
+      "treatments" => treatments,
       "defaultTreatment" => default_treatment,
-      "rules" => [
-        %{
-          "buckets" => [%{"treatment" => treatment, "size" => 100}],
-          "condition" => %{
-            "combiner" => "AND",
-            "matchers" => [
-              %{
-                "type" => "WHITELIST",
-                "strings" => keys
-              }
-            ]
-          }
-        }
-      ],
+      "rules" => [],
       "defaultRule" => [%{"treatment" => default_treatment, "size" => 100}]
     }
   end
 
-  @doc "Build an in-segment rule definition"
+  @doc "Build an in-segment rule definition using rules"
   def segment_rule(segment_name, treatment, opts \\ []) do
     default_treatment = Keyword.get(opts, :default_treatment, "off")
 
-    %{
-      "treatments" => [
+    treatments =
+      [
         %{"name" => treatment},
         %{"name" => default_treatment}
-      ],
+      ]
+      |> Enum.uniq_by(& &1["name"])
+
+    %{
+      "treatments" => treatments,
       "defaultTreatment" => default_treatment,
       "rules" => [
         %{
@@ -352,7 +364,7 @@ defmodule Splitio.Integration.AdminApi do
             "matchers" => [
               %{
                 "type" => "IN_SEGMENT",
-                "userDefinedSegment" => segment_name
+                "string" => segment_name
               }
             ]
           }
