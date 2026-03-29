@@ -189,6 +189,7 @@ defmodule Splitio.Sync.SegmentsTest do
       assert Storage.segment_contains?("big_segment", "d")
     end
 
+    @tag capture_log: true
     test "handles API error", %{config: config} do
       expect(Splitio.Api.HTTP.Mock, :get, fn _url, _opts ->
         {:error, {:http_error, 500}}

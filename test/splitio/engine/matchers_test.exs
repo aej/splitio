@@ -498,6 +498,7 @@ defmodule Splitio.Engine.MatchersTest do
   end
 
   describe "unknown matcher type" do
+    @tag capture_log: true
     test "returns false and logs warning" do
       matcher = %Matcher{matcher_type: :unknown_type}
       refute Matchers.evaluate(matcher, base_context("user"))
