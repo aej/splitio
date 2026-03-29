@@ -118,6 +118,7 @@ defmodule Splitio.Sync.SplitsTest do
       assert :not_found = Storage.get_split("to_archive")
     end
 
+    @tag capture_log: true
     test "handles API error", %{config: config} do
       expect(Splitio.Api.HTTP.Mock, :get, fn _url, _opts ->
         {:error, {:http_error, 500}}
@@ -126,6 +127,7 @@ defmodule Splitio.Sync.SplitsTest do
       assert {:error, {:http_error, 500}} = Splits.sync(config)
     end
 
+    @tag capture_log: true
     test "handles network timeout", %{config: config} do
       expect(Splitio.Api.HTTP.Mock, :get, fn _url, _opts ->
         {:error, :timeout}
