@@ -1,8 +1,6 @@
 name: Integration Test
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
     types: [labeled, opened, synchronize, reopened]
@@ -11,8 +9,8 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    # Run on push to main, or PRs with 'integration' label
-    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'integration')
+    # Only run on PRs with 'integration' label
+    if: contains(github.event.pull_request.labels.*.name, 'integration')
     timeout-minutes: 20
 
     env:
