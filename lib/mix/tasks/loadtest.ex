@@ -223,10 +223,29 @@ defmodule Mix.Tasks.Loadtest do
 
   defp worker_loop(parent, stop_ref, worker_id, users, split_names, batch_groups, counters) do
     Process.flag(:trap_exit, true)
-    do_worker_loop(parent, stop_ref, worker_id, users, split_names, batch_groups, counters, worker_id)
+
+    do_worker_loop(
+      parent,
+      stop_ref,
+      worker_id,
+      users,
+      split_names,
+      batch_groups,
+      counters,
+      worker_id
+    )
   end
 
-  defp do_worker_loop(parent, stop_ref, worker_id, users, split_names, batch_groups, counters, iteration) do
+  defp do_worker_loop(
+         parent,
+         stop_ref,
+         worker_id,
+         users,
+         split_names,
+         batch_groups,
+         counters,
+         iteration
+       ) do
     receive do
       ^stop_ref ->
         send(parent, {:worker_done, self()})
@@ -273,7 +292,16 @@ defmodule Mix.Tasks.Loadtest do
             incr(counters.errors)
         end
 
-        do_worker_loop(parent, stop_ref, worker_id, users, split_names, batch_groups, counters, iteration + 1)
+        do_worker_loop(
+          parent,
+          stop_ref,
+          worker_id,
+          users,
+          split_names,
+          batch_groups,
+          counters,
+          iteration + 1
+        )
     end
   end
 
@@ -411,11 +439,13 @@ defmodule Mix.Tasks.Loadtest do
       "impression flushes #{result.mock.impression_posts} below #{Map.get(mode_thresholds, "min_impression_posts", 0)}"
     )
     |> maybe_fail(
-      result.mock.impression_posts <= Map.get(mode_thresholds, "max_impression_posts", result.mock.impression_posts),
+      result.mock.impression_posts <=
+        Map.get(mode_thresholds, "max_impression_posts", result.mock.impression_posts),
       "impression flushes #{result.mock.impression_posts} exceeded #{Map.get(mode_thresholds, "max_impression_posts", result.mock.impression_posts)}"
     )
     |> maybe_fail(
-      result.mock.impression_count_posts >= Map.get(mode_thresholds, "min_impression_count_posts", 0),
+      result.mock.impression_count_posts >=
+        Map.get(mode_thresholds, "min_impression_count_posts", 0),
       "impression count flushes #{result.mock.impression_count_posts} below #{Map.get(mode_thresholds, "min_impression_count_posts", 0)}"
     )
     |> maybe_fail(
