@@ -24,7 +24,8 @@ defmodule Splitio.MixProject do
 
   defp deps do
     [
-      {:req, "~> 0.5"},
+      {:tesla, "~> 1.16"},
+      {:finch, "~> 0.20"},
       {:mint, "~> 1.6"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},

@@ -155,4 +155,23 @@ defmodule Splitio.Api.SDKTest do
       assert {:ok, _} = SDK.fetch_large_segment(config, "test", since)
     end
   end
+
+  describe "download_file/2" do
+    test "downloads raw binary body through the configured HTTP client" do
+      body = "key1\nkey2\nkey3\n"
+
+      expect(Splitio.Api.HTTP.Mock, :get, fn url, opts ->
+        assert url == "https://cdn.split.io/large-segments/test.csv"
+        assert Keyword.get(opts, :headers) == [{"authorization", "Bearer token"}]
+        assert Keyword.get(opts, :decode_json) == false
+        {:ok, body}
+      end)
+
+      assert {:ok, ^body} =
+               SDK.download_file(
+                 "https://cdn.split.io/large-segments/test.csv",
+                 %{"authorization" => "Bearer token"}
+               )
+    end
+  end
 end
