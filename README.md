@@ -163,16 +163,19 @@ and exercises evaluations plus recorder flushes through the public API.
 
 ```bash
 # Quick local smoke test
-mix loadtest --quick
+mise run loadtest-quick
 
 # Sustained runtime load test
-mix loadtest --sustained --processes 100 --duration 10
+mise run loadtest
 
 # Run with impressions disabled
-mix loadtest --sustained --impressions none
+mise run loadtest-none
 
 # Write machine-readable outputs
 mix loadtest --ci --json-output bench/results/loadtest.json --markdown-output bench/results/loadtest.md
+
+# Run the same two thresholded modes used in CI
+mise run loadtest-ci
 ```
 
 In GitHub Actions, the heavy load test runs only when the `loadtest` label is added to

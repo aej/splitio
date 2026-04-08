@@ -16,3 +16,19 @@ run = "mix test"
 [tasks.test-integration]
 description = "Run integration tests with env loaded from .env"
 run = "mix test --only integration"
+
+[tasks.loadtest]
+description = "Run the default sustained load test"
+run = "mix loadtest --sustained"
+
+[tasks.loadtest-quick]
+description = "Run a short local smoke load test"
+run = "mix loadtest --quick"
+
+[tasks.loadtest-none]
+description = "Run the sustained load test with impressions disabled"
+run = "mix loadtest --sustained --impressions none"
+
+[tasks.loadtest-ci]
+description = "Run both CI load-test modes with threshold checks"
+run = "mix loadtest --sustained --ci --impressions optimized && mix loadtest --sustained --ci --impressions none"
