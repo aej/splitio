@@ -1,32 +1,26 @@
 {
-  "_comment": "Minimum acceptable performance thresholds (baseline - 10%)",
-  "_baseline_date": "2026-03-09",
-  
-  "single_process": {
-    "get_treatment_simple": {
-      "min_ips": 31400,
-      "max_avg_us": 32
-    },
-    "get_treatment_segment": {
-      "min_ips": 20300,
-      "max_avg_us": 49
-    },
-    "get_treatment_random": {
-      "min_ips": 16300,
-      "max_avg_us": 61
-    },
-    "track": {
-      "min_ips": 28800,
-      "max_avg_us": 35
-    }
+  "_comment": "Conservative CI thresholds for the end-to-end runtime harness.",
+  "_baseline_date": "2026-04-08",
+  "bootstrap": {
+    "max_ready_ms": 5000,
+    "min_split_fetches": 1
   },
-  
-  "sustained_100p": {
-    "impressions_optimized": {
-      "min_total_ops_sec": 30500
+  "runtime": {
+    "optimized": {
+      "min_ops_sec": 10000,
+      "max_errors": 0,
+      "min_event_posts": 1,
+      "min_impression_posts": 1,
+      "min_impression_count_posts": 1,
+      "max_post_failures": 0
     },
-    "impressions_none": {
-      "min_total_ops_sec": 160500
+    "none": {
+      "min_ops_sec": 12000,
+      "max_errors": 0,
+      "min_event_posts": 1,
+      "min_impression_count_posts": 1,
+      "max_impression_posts": 0,
+      "max_post_failures": 0
     }
   }
 }
