@@ -4,7 +4,10 @@ defmodule Splitio.Config do
   @type mode :: :standalone | :consumer | :localhost
   @type impressions_mode :: :optimized | :debug | :none
   @type listener :: (map() -> any()) | {module(), atom(), [term()]}
-  @type fallback_entry :: %{required(:treatment) => String.t(), optional(:config) => String.t() | nil}
+  @type fallback_entry :: %{
+          required(:treatment) => String.t(),
+          optional(:config) => String.t() | nil
+        }
   @type fallback_treatment :: %{
           optional(:global) => fallback_entry(),
           optional(:by_flag) => %{String.t() => fallback_entry()}

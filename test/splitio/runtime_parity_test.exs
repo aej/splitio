@@ -19,7 +19,13 @@ defmodule Splitio.RuntimeParityTest do
         GenServer.stop(pid, :normal)
       end
 
-      for name <- [Splitio.Push.SSE, Impressions, UniqueKeys, Splitio.Impressions.Counter, Splitio.Impressions.UniqueKeys] do
+      for name <- [
+            Splitio.Push.SSE,
+            Impressions,
+            UniqueKeys,
+            Splitio.Impressions.Counter,
+            Splitio.Impressions.UniqueKeys
+          ] do
         if pid = Process.whereis(name) do
           Process.exit(pid, :kill)
         end
@@ -158,7 +164,9 @@ defmodule Splitio.RuntimeParityTest do
     {:ok, config} = Config.new(api_key: "localhost", split_file: write_localhost_yaml())
     Application.put_env(:splitio, :config, config)
 
-    assert {:ok, _pid} = start_supervised({Splitio.Localhost.FileWatcher, path: config.split_file})
+    assert {:ok, _pid} =
+             start_supervised({Splitio.Localhost.FileWatcher, path: config.split_file})
+
     assert {:ok, _pid} = Manager.start_link(config)
     assert :ok = Splitio.Manager.block_until_ready(1_000)
   end
@@ -174,7 +182,10 @@ defmodule Splitio.RuntimeParityTest do
       conditions: [
         %Condition{
           condition_type: :rollout,
-          matcher_group: %MatcherGroup{combiner: :and, matchers: [%Matcher{matcher_type: :all_keys}]},
+          matcher_group: %MatcherGroup{
+            combiner: :and,
+            matchers: [%Matcher{matcher_type: :all_keys}]
+          },
           partitions: [%Partition{treatment: "on", size: 100}],
           label: "default rule"
         }

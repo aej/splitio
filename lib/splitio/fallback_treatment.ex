@@ -6,8 +6,11 @@ defmodule Splitio.FallbackTreatment do
   @spec resolve(String.t(), String.t() | nil) :: {String.t(), String.t() | nil}
   def resolve(split_name, default_treatment \\ "control") do
     case Application.get_env(:splitio, :config) do
-      %Config{fallback_treatment: fallback} -> resolve_from_config(split_name, default_treatment, fallback)
-      _ -> {default_treatment, nil}
+      %Config{fallback_treatment: fallback} ->
+        resolve_from_config(split_name, default_treatment, fallback)
+
+      _ ->
+        {default_treatment, nil}
     end
   end
 
@@ -24,7 +27,8 @@ defmodule Splitio.FallbackTreatment do
       %{treatment: treatment} = fallback_entry when is_binary(treatment) and treatment != "" ->
         {treatment, Map.get(fallback_entry, :config)}
 
-      %{"treatment" => treatment} = fallback_entry when is_binary(treatment) and treatment != "" ->
+      %{"treatment" => treatment} = fallback_entry
+      when is_binary(treatment) and treatment != "" ->
         {treatment, Map.get(fallback_entry, "config")}
 
       _ ->

@@ -5,7 +5,8 @@ defmodule Splitio.Localhost.Loader do
   alias Splitio.Models.Segment
   alias Splitio.Storage
 
-  @spec load(String.t(), String.t() | nil) :: {:ok, %{splits: non_neg_integer(), segments: non_neg_integer()}} | {:error, term()}
+  @spec load(String.t(), String.t() | nil) ::
+          {:ok, %{splits: non_neg_integer(), segments: non_neg_integer()}} | {:error, term()}
   def load(split_file, segment_directory \\ nil) when is_binary(split_file) do
     with {:ok, splits} <- load_splits(split_file),
          {:ok, segments} <- load_segments(segment_directory) do
@@ -20,9 +21,14 @@ defmodule Splitio.Localhost.Loader do
 
   defp load_splits(path) do
     cond do
-      String.ends_with?(path, ".yaml") or String.ends_with?(path, ".yml") -> YamlParser.parse_file(path)
-      String.ends_with?(path, ".json") -> JsonParser.parse_file(path)
-      true -> {:error, :unknown_format}
+      String.ends_with?(path, ".yaml") or String.ends_with?(path, ".yml") ->
+        YamlParser.parse_file(path)
+
+      String.ends_with?(path, ".json") ->
+        JsonParser.parse_file(path)
+
+      true ->
+        {:error, :unknown_format}
     end
   end
 
