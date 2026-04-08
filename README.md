@@ -133,10 +133,26 @@ names = Splitio.Manager.split_names()
 
 ## Development
 
+### Using mise
+
+This repo includes a project-level [`mise`](https://mise.jdx.dev/) config for tool versions,
+tasks, and environment loading.
+
+```bash
+# install pinned Erlang/Elixir versions
+mise install
+
+# install Hex/Rebar and Elixir dependencies
+mise run setup
+```
+
+`mise` loads `.env` automatically via [`mise.toml`](./mise.toml), so integration test
+credentials in `.env` are available without running `source .env` first.
+
 ### Running Tests
 
 ```bash
-mix test
+mise run test
 ```
 
 ### Load Testing
@@ -179,11 +195,8 @@ Integration tests run against the real Split.io API. They require credentials:
 # Copy example env and fill in values
 cp .env.example .env
 
-# Source the env file
-source .env
-
 # Run integration tests
-mix test --only integration
+mise run test-integration
 ```
 
 Required environment variables (see `.env.example`):
