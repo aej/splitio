@@ -3,6 +3,15 @@ defmodule Splitio.Config do
 
   @type mode :: :standalone | :consumer | :localhost
   @type impressions_mode :: :optimized | :debug | :none
+  @type listener :: (map() -> any()) | {module(), atom(), [term()]}
+  @type fallback_entry :: %{
+          required(:treatment) => String.t(),
+          optional(:config) => String.t() | nil
+        }
+  @type fallback_treatment :: %{
+          optional(:global) => fallback_entry(),
+          optional(:by_flag) => %{String.t() => fallback_entry()}
+        }
 
   @type t :: %__MODULE__{
           api_key: String.t(),
@@ -25,17 +34,23 @@ defmodule Splitio.Config do
           streaming_url: String.t(),
           telemetry_url: String.t(),
           split_file: String.t() | nil,
+          segment_directory: String.t() | nil,
           localhost_refresh_enabled: boolean(),
           flag_sets_filter: [String.t()] | nil,
           labels_enabled: boolean(),
-          ip_addresses_enabled: boolean()
+          ip_addresses_enabled: boolean(),
+          impression_listener: listener() | nil,
+          fallback_treatment: fallback_treatment() | nil
         }
 
   @enforce_keys [:api_key]
   defstruct [
     :api_key,
     :split_file,
+    :segment_directory,
     :flag_sets_filter,
+    :impression_listener,
+    :fallback_treatment,
     mode: :standalone,
     streaming_enabled: true,
     features_refresh_rate: 30,
@@ -87,7 +102,7 @@ defmodule Splitio.Config do
     else
       config = %__MODULE__{
         api_key: api_key,
-        mode: Keyword.get(opts, :mode, :standalone),
+        mode: resolve_mode(api_key, Keyword.get(opts, :mode, :standalone)),
         streaming_enabled: Keyword.get(opts, :streaming_enabled, true),
         features_refresh_rate: Keyword.get(opts, :features_refresh_rate, 30),
         segments_refresh_rate: Keyword.get(opts, :segments_refresh_rate, 30),
@@ -106,10 +121,13 @@ defmodule Splitio.Config do
         streaming_url: Keyword.get(opts, :streaming_url, "https://streaming.split.io"),
         telemetry_url: Keyword.get(opts, :telemetry_url, "https://telemetry.split.io/api"),
         split_file: Keyword.get(opts, :split_file),
+        segment_directory: Keyword.get(opts, :segment_directory),
         localhost_refresh_enabled: Keyword.get(opts, :localhost_refresh_enabled, false),
         flag_sets_filter: normalize_flag_sets(Keyword.get(opts, :flag_sets_filter)),
         labels_enabled: Keyword.get(opts, :labels_enabled, true),
-        ip_addresses_enabled: Keyword.get(opts, :ip_addresses_enabled, true)
+        ip_addresses_enabled: Keyword.get(opts, :ip_addresses_enabled, true),
+        impression_listener: Keyword.get(opts, :impression_listener),
+        fallback_treatment: normalize_fallback_treatment(Keyword.get(opts, :fallback_treatment))
       }
 
       {:ok, config}
@@ -164,4 +182,67 @@ defmodule Splitio.Config do
   defp valid_flag_set?(set) do
     Regex.match?(~r/^[a-z][_a-z0-9]{0,49}$/, set)
   end
+
+  defp resolve_mode("localhost", _mode), do: :localhost
+  defp resolve_mode(_api_key, mode), do: mode
+
+  defp normalize_fallback_treatment(nil), do: nil
+
+  defp normalize_fallback_treatment(fallback) when is_map(fallback) do
+    global =
+      (Map.get(fallback, :global) || Map.get(fallback, "global"))
+      |> normalize_fallback_entry()
+
+    by_flag =
+      (Map.get(fallback, :by_flag) || Map.get(fallback, "by_flag"))
+      |> normalize_fallback_by_flag()
+
+    case %{global: global, by_flag: by_flag} do
+      %{global: nil, by_flag: nil} -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_fallback_treatment(_), do: nil
+
+  defp normalize_fallback_by_flag(nil), do: nil
+
+  defp normalize_fallback_by_flag(by_flag) when is_map(by_flag) do
+    by_flag
+    |> Enum.reduce(%{}, fn {flag_name, entry}, acc ->
+      case normalize_fallback_entry(entry) do
+        nil -> acc
+        normalized -> Map.put(acc, to_string(flag_name), normalized)
+      end
+    end)
+    |> case do
+      map when map_size(map) == 0 -> nil
+      map -> map
+    end
+  end
+
+  defp normalize_fallback_by_flag(_), do: nil
+
+  defp normalize_fallback_entry(nil), do: nil
+
+  defp normalize_fallback_entry(entry) when is_binary(entry) do
+    %{treatment: entry}
+  end
+
+  defp normalize_fallback_entry(entry) when is_map(entry) do
+    treatment = Map.get(entry, :treatment) || Map.get(entry, "treatment")
+    config = Map.get(entry, :config) || Map.get(entry, "config")
+
+    if is_binary(treatment) and treatment != "" do
+      %{treatment: treatment, config: normalize_fallback_config(config)}
+    else
+      nil
+    end
+  end
+
+  defp normalize_fallback_entry(_), do: nil
+
+  defp normalize_fallback_config(nil), do: nil
+  defp normalize_fallback_config(config) when is_binary(config), do: config
+  defp normalize_fallback_config(config), do: Jason.encode!(config)
 end

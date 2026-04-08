@@ -45,9 +45,12 @@ defmodule Splitio.Engine.Evaluator do
   defp do_evaluate(key, split_name, attributes, depth) do
     case Storage.get_split(split_name) do
       :not_found ->
+        {treatment, config} = Splitio.FallbackTreatment.resolve(split_name, "control")
+
         %EvaluationResult{
-          treatment: "control",
+          treatment: treatment,
           label: @label_not_found,
+          config: config,
           change_number: 0
         }
 

@@ -110,6 +110,12 @@ defmodule Splitio.Storage.Backend.ETS do
   end
 
   @impl true
+  def delete_segment(name) do
+    :ets.delete(@segments_table, name)
+    :ok
+  end
+
+  @impl true
   def segment_contains?(name, key) do
     case :ets.lookup(@segments_table, name) do
       [{^name, %Segment{keys: keys}}] -> MapSet.member?(keys, key)

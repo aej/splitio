@@ -178,6 +178,11 @@ defmodule Splitio.Push.SSE do
       {:ok, token, channels} ->
         connect_with_token(state, token, channels)
 
+      {:disabled, :push_disabled} ->
+        Logger.info("Streaming disabled by server, using polling")
+        Splitio.Sync.Manager.start_polling()
+        %{state | status: :disabled}
+
       {:error, reason} ->
         Logger.error("Cannot connect SSE: no auth token - #{inspect(reason)}")
         schedule_reconnect(state)

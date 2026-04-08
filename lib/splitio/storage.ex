@@ -57,6 +57,9 @@ defmodule Splitio.Storage do
   @spec put_segment(Segment.t()) :: :ok
   def put_segment(segment), do: backend().put_segment(segment)
 
+  @spec delete_segment(segment_name()) :: :ok
+  def delete_segment(name), do: backend().delete_segment(name)
+
   @spec segment_contains?(segment_name(), String.t()) :: boolean()
   def segment_contains?(name, key), do: backend().segment_contains?(name, key)
 

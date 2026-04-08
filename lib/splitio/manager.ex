@@ -36,4 +36,12 @@ defmodule Splitio.Manager do
     |> Enum.filter(&(&1.status == :active))
     |> Enum.map(& &1.name)
   end
+
+  @doc """
+  Block until the SDK is ready or timeout.
+  """
+  @spec block_until_ready(non_neg_integer()) :: :ok | {:error, :timeout}
+  def block_until_ready(timeout_ms \\ 10_000) do
+    Splitio.block_until_ready(timeout_ms)
+  end
 end

@@ -44,9 +44,15 @@ defmodule Splitio do
 
   alias Splitio.{Key, Storage}
   alias Splitio.Engine.Evaluator
+  alias Splitio.Impressions.Listener
+  alias Splitio.Impressions.UniqueKeys, as: UniqueKeysTracker
+  alias Splitio.Localhost.FileWatcher
   alias Splitio.Models.{EvaluationResult, Impression, Event}
   alias Splitio.Sync.Manager, as: SyncManager
-  alias Splitio.Recorder.{Impressions, Events}
+  alias Splitio.Recorder.Events
+  alias Splitio.Recorder.Impressions
+  alias Splitio.Recorder.ImpressionCounts
+  alias Splitio.Recorder.UniqueKeys, as: UniqueKeysRecorder
 
   @type key :: String.t() | Key.t()
   @type attributes :: map()
@@ -84,16 +90,7 @@ defmodule Splitio do
     case Splitio.Config.from_env() do
       {:ok, config} ->
         Application.put_env(:splitio, :config, config)
-
-        children = [
-          {Finch, name: Splitio.Api.HTTP.Tesla.finch_name()},
-          Splitio.Storage.TableOwner,
-          {Splitio.Impressions.Counter, []},
-          {Splitio.Recorder.Impressions, config},
-          {Splitio.Recorder.Events, config},
-          {Splitio.Recorder.ImpressionCounts, config},
-          {Splitio.Sync.Manager, config}
-        ]
+        children = children_for_config(config)
 
         Supervisor.start_link(children, strategy: :one_for_one, name: Splitio.Supervisor)
 
@@ -126,6 +123,45 @@ defmodule Splitio do
   @spec block_until_ready(non_neg_integer()) :: :ok | {:error, :timeout}
   def block_until_ready(timeout_ms \\ 10_000) do
     SyncManager.block_until_ready(timeout_ms)
+  end
+
+  @doc """
+  Flush pending data and stop the SDK supervisor.
+  """
+  @spec destroy() :: :ok
+  def destroy do
+    safe_flush(Impressions)
+    safe_flush(Events)
+    safe_flush(ImpressionCounts)
+    safe_flush(UniqueKeysRecorder)
+
+    case Process.whereis(Splitio.Supervisor) do
+      nil -> :ok
+      pid -> Supervisor.stop(pid, :normal)
+    end
+  end
+
+  @doc """
+  Attach a callback to SDK lifecycle events.
+
+  Supported events:
+  - `:sdk_ready`
+  - `:sdk_update`
+  """
+  @spec on(:sdk_ready | :sdk_update, (map() -> any())) :: {:ok, term()}
+  def on(event, callback) when event in [:sdk_ready, :sdk_update] and is_function(callback, 1) do
+    event_name = telemetry_event_name(event)
+    handler_id = {__MODULE__, event, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        event_name,
+        fn _event, _measurements, metadata, cb -> cb.(metadata) end,
+        callback
+      )
+
+    {:ok, handler_id}
   end
 
   # ============================================================================
@@ -184,7 +220,7 @@ defmodule Splitio do
     # Record impression (only if recorder is running)
     unless result.impressions_disabled do
       try do
-        record_impression(key, split_name, result, opts)
+        record_impression(key, split_name, result, attributes, opts)
       catch
         :exit, _ -> :ok
       end
@@ -320,9 +356,13 @@ defmodule Splitio do
   def track(key, traffic_type, event_type, value \\ nil, properties \\ nil) do
     case Event.new(key, traffic_type, event_type, value, properties) do
       {:ok, event} ->
-        case Events.record(event) do
-          :ok -> true
-          {:error, _} -> false
+        try do
+          case Events.record(event) do
+            :ok -> true
+            {:error, _} -> false
+          end
+        catch
+          :exit, _ -> false
         end
 
       {:error, _} ->
@@ -334,7 +374,7 @@ defmodule Splitio do
   # Private
   # ============================================================================
 
-  defp record_impression(key, split_name, %EvaluationResult{} = result, opts) do
+  defp record_impression(key, split_name, %EvaluationResult{} = result, attributes, opts) do
     properties = Keyword.get(opts, :properties)
 
     impression = %Impression{
@@ -348,6 +388,7 @@ defmodule Splitio do
       properties: properties
     }
 
+    Listener.notify(impression, attributes)
     Impressions.record(impression)
   end
 
@@ -360,4 +401,51 @@ defmodule Splitio do
       nil
     end
   end
+
+  defp children_for_config(%Splitio.Config{mode: :localhost} = config) do
+    [
+      Splitio.Storage.TableOwner,
+      {FileWatcher,
+       path: config.split_file,
+       segment_directory: config.segment_directory,
+       refresh_rate: config.features_refresh_rate,
+       refresh_enabled: config.localhost_refresh_enabled},
+      {SyncManager, config}
+    ]
+  end
+
+  defp children_for_config(%Splitio.Config{} = config) do
+    base_children = [
+      {Finch, name: Splitio.Api.HTTP.Tesla.finch_name()},
+      Splitio.Storage.TableOwner,
+      {Splitio.Impressions.Counter, []},
+      {UniqueKeysTracker, []},
+      {Impressions, config},
+      {Events, config},
+      {ImpressionCounts, config},
+      {UniqueKeysRecorder, config}
+    ]
+
+    push_children =
+      if config.streaming_enabled do
+        [{Splitio.Push.Auth, config}, {Splitio.Push.SSE, config}]
+      else
+        []
+      end
+
+    base_children ++ push_children ++ [{SyncManager, config}]
+  end
+
+  defp safe_flush(module) do
+    if Process.whereis(module) do
+      module.flush()
+    else
+      :ok
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp telemetry_event_name(:sdk_ready), do: [:splitio, :sdk, :ready]
+  defp telemetry_event_name(:sdk_update), do: [:splitio, :sdk, :update]
 end

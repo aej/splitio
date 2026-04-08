@@ -111,6 +111,7 @@ defmodule Splitio.Sync.Manager do
   @impl true
   def handle_cast(:start_polling, state) do
     state = cancel_poll_timer(state)
+    disconnect_streaming()
     state = schedule_poll(state)
     {:noreply, %{state | mode: :polling}}
   end
@@ -118,35 +119,41 @@ defmodule Splitio.Sync.Manager do
   @impl true
   def handle_cast(:start_streaming, state) do
     state = cancel_poll_timer(state)
+    connect_streaming()
     {:noreply, %{state | mode: :streaming, backoff: Backoff.reset(state.backoff)}}
   end
 
   @impl true
   def handle_info(:initial_sync, state) do
-    case do_sync_all(state.config) do
-      :ok ->
-        Logger.info("Initial sync complete")
-
-        # Notify readiness
+    case state.config.mode do
+      :localhost ->
+        Logger.info("Localhost mode ready")
         notify_ready()
+        {:noreply, %{state | ready: true, mode: :polling}}
 
-        # Start streaming or polling based on config
-        state =
-          if state.config.streaming_enabled do
-            # TODO: Start SSE connection
-            %{state | mode: :streaming, ready: true}
-          else
-            schedule_poll(%{state | mode: :polling, ready: true})
-          end
+      _ ->
+        case do_sync_all(state.config) do
+          :ok ->
+            Logger.info("Initial sync complete")
 
-        {:noreply, state}
+            notify_ready()
 
-      {:error, reason} ->
-        Logger.error("Initial sync failed: #{inspect(reason)}")
-        # Retry with backoff
-        {wait_ms, backoff} = Backoff.next(state.backoff)
-        Process.send_after(self(), :initial_sync, wait_ms)
-        {:noreply, %{state | backoff: backoff}}
+            state =
+              if state.config.streaming_enabled do
+                connect_streaming()
+                %{state | mode: :streaming, ready: true}
+              else
+                schedule_poll(%{state | mode: :polling, ready: true})
+              end
+
+            {:noreply, state}
+
+          {:error, reason} ->
+            Logger.error("Initial sync failed: #{inspect(reason)}")
+            {wait_ms, backoff} = Backoff.next(state.backoff)
+            Process.send_after(self(), :initial_sync, wait_ms)
+            {:noreply, %{state | backoff: backoff}}
+        end
     end
   end
 
@@ -193,6 +200,22 @@ defmodule Splitio.Sync.Manager do
   defp cancel_poll_timer(%{poll_timer: timer} = state) do
     Process.cancel_timer(timer)
     %{state | poll_timer: nil}
+  end
+
+  defp connect_streaming do
+    if Process.whereis(Splitio.Push.SSE) do
+      Splitio.Push.SSE.connect()
+    else
+      start_polling()
+    end
+  end
+
+  defp disconnect_streaming do
+    if Process.whereis(Splitio.Push.SSE) do
+      Splitio.Push.SSE.disconnect()
+    else
+      :ok
+    end
   end
 
   defp notify_ready do

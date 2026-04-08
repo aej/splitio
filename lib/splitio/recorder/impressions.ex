@@ -8,7 +8,7 @@ defmodule Splitio.Recorder.Impressions do
   alias Splitio.Api.Events, as: EventsApi
   alias Splitio.Config
   alias Splitio.Models.Impression
-  alias Splitio.Impressions.{Observer, Counter}
+  alias Splitio.Impressions.{Counter, Observer, UniqueKeys}
 
   require Logger
 
@@ -114,6 +114,7 @@ defmodule Splitio.Recorder.Impressions do
   defp process_impression(impression, :none) do
     # None mode: only count, never send
     Counter.increment(impression.feature, impression.time)
+    UniqueKeys.record(impression.feature, impression.key)
     {impression, false}
   end
 
