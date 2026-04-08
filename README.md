@@ -157,35 +157,30 @@ mise run test
 
 ### Load Testing
 
-Run load tests to benchmark SDK performance:
+Run end-to-end load tests against a mocked Split/Harness HTTP boundary. The SDK is
+started as a child in a supervision tree, bootstraps through normal sync code paths,
+and exercises evaluations plus recorder flushes through the public API.
 
 ```bash
-# Quick benchmark
-mix loadtest --quick
+# Quick local smoke test
+mise run loadtest-quick
 
-# Full benchmark suite
-mix loadtest
+# Sustained runtime load test
+mise run loadtest
 
-# Sustained load test only
-mix loadtest --sustained --processes 100 --duration 10
+# Run with impressions disabled
+mise run loadtest-none
 
-# Test with impressions disabled (fastest)
-mix loadtest --quick --impressions none
+# Write machine-readable outputs
+mix loadtest --ci --json-output bench/results/loadtest.json --markdown-output bench/results/loadtest.md
 
-# CI mode (checks against thresholds, exits non-zero on failure)
-mix loadtest --sustained --ci
+# Run the same two thresholded modes used in CI
+mise run loadtest-ci
 ```
 
-### Performance Baselines
-
-| Scenario | Impressions Mode | Throughput | Latency |
-|----------|------------------|------------|---------|
-| `get_treatment` (simple) | optimized | ~35K ops/sec | ~29us |
-| `get_treatment` (segment) | optimized | ~23K ops/sec | ~44us |
-| `get_treatment` (random) | optimized | ~18K ops/sec | ~55us |
-| `track` | - | ~32K ops/sec | ~31us |
-| 100-process sustained | optimized | ~34K ops/sec | - |
-| 100-process sustained | none | ~178K ops/sec | - |
+In GitHub Actions, the heavy load test runs only when the `loadtest` label is added to
+the PR. Results are posted back to the PR as a comment, and the `Load Test Gate` status
+must be green before a labeled PR can merge.
 
 ### Integration Tests
 
@@ -209,10 +204,12 @@ Required environment variables (see `.env.example`):
 ### CI Workflows
 
 - **Test**: Runs on all PRs to `main` - compiles, tests, format check
-- **Load Test**: Runs when `loadtest` label added - checks performance thresholds
+- **Load Test**: Runs only when the `loadtest` label is added - checks runtime thresholds and comments results on the PR
+- **Load Test Gate**: Refreshes merge status for the current PR head SHA; labeled PRs must rerun load test after new commits
 - **Integration Test**: Runs when `integration` label added - tests against real Split.io API
 
-All three checks must pass before merging to `main`.
+`Run Tests`, `Integration Tests`, and `Load Test Gate` should be configured as required
+status checks on `main`.
 
 ## License
 

@@ -3,20 +3,40 @@ name: Load Test
 on:
   pull_request:
     branches: [main]
-    types: [labeled, opened, synchronize, reopened]
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
 
 jobs:
   loadtest:
     name: Run Load Tests
     runs-on: ubuntu-latest
-    # Only run when 'loadtest' label is present
-    if: contains(github.event.pull_request.labels.*.name, 'loadtest')
+    if: github.event.label.name == 'loadtest'
+    timeout-minutes: 30
 
     env:
       MIX_ENV: dev
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Mark load test gate pending
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.pull_request.head.sha;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state: 'pending',
+              context: 'Load Test Gate',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              description: 'Load tests are running for this PR commit'
+            });
 
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
@@ -40,8 +60,102 @@ jobs:
       - name: Compile
         run: mix compile
 
-      - name: Run load test (impressions optimized)
-        run: mix loadtest --sustained --ci
+      - name: Run load tests
+        id: loadtest
+        shell: bash
+        run: |
+          set +e
+          mix loadtest --sustained --ci --impressions optimized --json-output bench/results/loadtest-optimized.json --markdown-output bench/results/loadtest-optimized.md
+          optimized_exit=$?
+          mix loadtest --sustained --ci --impressions none --json-output bench/results/loadtest-none.json --markdown-output bench/results/loadtest-none.md
+          none_exit=$?
+          echo "optimized_exit=$optimized_exit" >> "$GITHUB_OUTPUT"
+          echo "none_exit=$none_exit" >> "$GITHUB_OUTPUT"
+          if [ "$optimized_exit" -ne 0 ] || [ "$none_exit" -ne 0 ]; then
+            exit 1
+          fi
 
-      - name: Run load test (impressions none)
-        run: mix loadtest --sustained --impressions none --ci
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-results
+          path: bench/results/
+
+      - name: Comment results on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- splitio-loadtest-results -->';
+            const pr = context.payload.pull_request.number;
+            const optimized = fs.existsSync('bench/results/loadtest-optimized.md')
+              ? fs.readFileSync('bench/results/loadtest-optimized.md', 'utf8')
+              : 'Optimized run did not produce a markdown summary.';
+            const none = fs.existsSync('bench/results/loadtest-none.md')
+              ? fs.readFileSync('bench/results/loadtest-none.md', 'utf8')
+              : 'NONE run did not produce a markdown summary.';
+            const body = `${marker}
+            # Load Test Results
+
+            Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+
+            ${optimized}
+
+            ${none}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr,
+              per_page: 100
+            });
+
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr,
+                body
+              });
+            }
+
+      - name: Update load test gate status
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const sha = context.payload.pull_request.head.sha;
+            const stateMap = {
+              success: 'success',
+              failure: 'failure',
+              cancelled: 'error'
+            };
+            const state = stateMap[process.env.JOB_STATUS] || 'error';
+            const descriptionMap = {
+              success: 'Load tests passed for this PR commit',
+              failure: 'Load tests failed for this PR commit',
+              error: 'Load tests did not complete successfully'
+            };
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'Load Test Gate',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              description: descriptionMap[state]
+            });

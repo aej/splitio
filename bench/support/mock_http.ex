@@ -1,22 +1,20 @@
 defmodule Splitio.Bench.MockHTTP do
   @moduledoc """
-  In-memory HTTP implementation for load testing.
+  HTTP transport used by load tests.
 
-  Returns pre-configured responses instantly without network overhead.
-  Implements the Splitio.Api.HTTP behaviour.
+  Requests are delegated to `Splitio.Bench.MockServer` so the SDK still crosses
+  the configured HTTP boundary while remaining fully deterministic in CI.
   """
 
   @behaviour Splitio.Api.HTTP
 
   @impl true
-  def get(_url, _opts) do
-    # Return empty response - splits/segments already loaded via fixtures
-    {:ok, %{"splits" => [], "since" => 1000, "till" => 1000}}
+  def get(url, opts) do
+    Splitio.Bench.MockServer.get(url, opts)
   end
 
   @impl true
-  def post(_url, _body, _opts) do
-    # Accept all posts (impressions, events, telemetry)
-    {:ok, %{}}
+  def post(url, body, opts) do
+    Splitio.Bench.MockServer.post(url, body, opts)
   end
 end

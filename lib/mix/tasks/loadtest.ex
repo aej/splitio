@@ -1,6 +1,11 @@
 defmodule Mix.Tasks.Loadtest do
   @moduledoc """
-  Run load tests for the Splitio SDK.
+  Run end-to-end SDK load tests against a mocked Split/Harness boundary.
+
+  The SDK is started as it would be inside a real Elixir application:
+  as a child in a supervision tree. Network traffic is mocked at the HTTP
+  boundary so sync, evaluation, impressions, and event flushing still cross
+  the same public runtime edges used in production.
 
   ## Usage
 
@@ -8,24 +13,28 @@ defmodule Mix.Tasks.Loadtest do
 
   ## Options
 
-      --quick         Run quick benchmark (shorter warmup/time)
-      --sustained     Run only the sustained load test
-      --processes N   Number of processes for sustained test (default: 100)
-      --duration N    Duration in seconds for sustained test (default: 10)
-      --impressions M Impressions mode: none, optimized (default), debug
-      --ci            CI mode: check thresholds and exit non-zero on failure
-
+      --quick                  Run a shorter, lighter profile
+      --sustained              Accepted for compatibility; sustained is the default mode
+      --processes N            Number of worker processes (default: 100)
+      --duration N             Duration in seconds (default: 10)
+      --impressions MODE       Impressions mode: none, optimized (default), debug
+      --ci                     Check thresholds and exit non-zero on failure
+      --json-output PATH       Write structured JSON results
+      --markdown-output PATH   Write markdown summary for CI comments
   """
 
   use Mix.Task
 
   require Logger
 
-  @shortdoc "Run Splitio SDK load tests"
+  @shortdoc "Run Splitio end-to-end load tests"
+  @thresholds_file "bench/thresholds.json"
+  @default_processes 100
+  @default_duration_s 10
+  @default_user_count 20_000
 
   @impl Mix.Task
   def run(args) do
-    # Parse arguments
     {opts, _, _} =
       OptionParser.parse(args,
         switches: [
@@ -34,334 +43,425 @@ defmodule Mix.Tasks.Loadtest do
           processes: :integer,
           duration: :integer,
           impressions: :string,
-          ci: :boolean
+          ci: :boolean,
+          json_output: :string,
+          markdown_output: :string
         ]
       )
 
-    # Ensure dependencies are compiled
     Mix.Task.run("compile")
-
-    # Start required applications
-    Application.ensure_all_started(:telemetry)
     Application.ensure_all_started(:logger)
-
-    # Suppress noisy logs during benchmarks
+    Application.ensure_all_started(:telemetry)
     Logger.configure(level: :error)
 
-    # Compile bench support files
-    Code.compile_file("bench/support/mock_http.ex")
-    Code.compile_file("bench/support/fixtures.ex")
+    profile = build_profile(opts)
+    result = run_profile(profile)
 
-    # Setup
-    setup_environment(opts)
+    write_outputs(result, opts)
 
-    # Run appropriate benchmarks and collect results
-    result =
-      cond do
-        opts[:sustained] ->
-          run_sustained_only(opts)
-
-        opts[:quick] ->
-          run_quick_benchmarks(opts)
-
-        true ->
-          run_full_benchmarks(opts)
-      end
-
-    # In CI mode, check thresholds
     if opts[:ci] do
-      check_thresholds(result, opts)
+      check_thresholds!(result)
     end
   end
 
-  defp setup_environment(opts) do
-    IO.puts("Setting up load test environment...")
+  defp build_profile(opts) do
+    quick? = opts[:quick] || false
 
-    impressions_mode =
-      case opts[:impressions] do
-        "none" -> :none
-        "debug" -> :debug
-        _ -> :optimized
-      end
+    %{
+      processes: opts[:processes] || if(quick?, do: 25, else: @default_processes),
+      duration_s: opts[:duration] || if(quick?, do: 5, else: @default_duration_s),
+      impressions_mode: parse_impressions_mode(opts[:impressions]),
+      user_count: if(quick?, do: 5_000, else: @default_user_count),
+      num_splits: if(quick?, do: 60, else: 120),
+      num_segments: if(quick?, do: 8, else: 12),
+      segment_size: if(quick?, do: 750, else: 1_500)
+    }
+  end
 
-    IO.puts("  Impressions mode: #{impressions_mode}")
+  defp run_profile(profile) do
+    dataset =
+      Splitio.Bench.Fixtures.dataset(
+        num_splits: profile.num_splits,
+        num_segments: profile.num_segments,
+        segment_size: profile.segment_size
+      )
 
-    # Configure mock HTTP client
+    users = Splitio.Bench.Fixtures.workload_users(profile.user_count)
+
+    {:ok, _mock_server} = Splitio.Bench.MockServer.start_link(dataset: dataset)
+
+    configure_runtime(profile)
+
+    {bootstrap_us, harness_sup} =
+      :timer.tc(fn ->
+        {:ok, harness_sup} = start_harness_supervisor()
+        :ok = Splitio.block_until_ready(15_000)
+        harness_sup
+      end)
+
+    sustained =
+      run_sustained_load(
+        users,
+        dataset.split_names,
+        profile.processes,
+        profile.duration_s
+      )
+
+    flush_recorders()
+    mock_stats = Splitio.Bench.MockServer.stats()
+
+    stop_harness_supervisor(harness_sup)
+    stop_mock_server()
+
+    %{
+      schema_version: 1,
+      suite: "splitio_loadtest",
+      generated_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      mode: Atom.to_string(profile.impressions_mode),
+      bootstrap: %{
+        ready_ms: round(bootstrap_us / 1_000),
+        split_fetches: mock_stats.split_fetches,
+        segment_fetches: mock_stats.segment_fetches
+      },
+      sustained: sustained,
+      mock: mock_stats
+    }
+  end
+
+  defp configure_runtime(profile) do
     Application.put_env(:splitio, :http_client, Splitio.Bench.MockHTTP)
     Application.put_env(:splitio, :api_key, "bench-api-key")
     Application.put_env(:splitio, :streaming_enabled, false)
-    Application.put_env(:splitio, :impressions_mode, impressions_mode)
-
-    # Start the SDK
-    {:ok, _pid} = Splitio.start_link()
-    Process.sleep(100)
-
-    # Populate test data
-    IO.puts("Populating test data: 100 splits, 10 segments x 1000 keys...")
-
-    Splitio.Bench.Fixtures.populate(
-      num_splits: 100,
-      num_segments: 10,
-      segment_size: 1000
-    )
-
-    IO.puts("Data populated.\n")
+    Application.put_env(:splitio, :impressions_mode, profile.impressions_mode)
+    Application.put_env(:splitio, :features_refresh_rate, 60)
+    Application.put_env(:splitio, :segments_refresh_rate, 60)
+    Application.put_env(:splitio, :impressions_refresh_rate, 1)
+    Application.put_env(:splitio, :impressions_bulk_size, 250)
+    Application.put_env(:splitio, :impressions_queue_size, 100_000)
+    Application.put_env(:splitio, :events_refresh_rate, 1)
+    Application.put_env(:splitio, :events_bulk_size, 250)
+    Application.put_env(:splitio, :events_queue_size, 100_000)
+    Application.delete_env(:splitio, :config)
   end
 
-  defp run_quick_benchmarks(opts) do
-    IO.puts("Running quick benchmarks...\n")
+  defp start_harness_supervisor do
+    children = [
+      Splitio,
+      {Task.Supervisor, name: Splitio.Bench.TaskSupervisor}
+    ]
 
-    user_keys = Splitio.Bench.Fixtures.user_keys(1000)
-    split_names = for i <- 1..100, do: "feature_#{i}"
-
-    Benchee.run(
-      %{
-        "get_treatment" => fn ->
-          Splitio.get_treatment(Enum.random(user_keys), Enum.random(split_names))
-        end,
-        "track" => fn ->
-          Splitio.track(Enum.random(user_keys), "user", "click")
-        end
-      },
-      warmup: 1,
-      time: 2,
-      print: [configuration: false]
-    )
-
-    # Return results for threshold checking
-    %{type: :quick, impressions_mode: opts[:impressions] || "optimized"}
+    Supervisor.start_link(children, strategy: :one_for_one)
   end
 
-  defp run_full_benchmarks(opts) do
-    IO.puts("Running full benchmarks...\n")
+  defp stop_harness_supervisor(harness_sup) do
+    Supervisor.stop(harness_sup, :normal, 30_000)
+    Application.delete_env(:splitio, :config)
+  end
 
-    user_keys = Splitio.Bench.Fixtures.user_keys(10_000)
-    split_names = for i <- 1..100, do: "feature_#{i}"
-    batch_splits = Enum.take(split_names, 10)
-    attrs_with_age = %{"age" => 25}
+  defp stop_mock_server do
+    if pid = Process.whereis(Splitio.Bench.MockServer) do
+      GenServer.stop(pid, :normal, 30_000)
+    end
+  end
 
-    # Single-process benchmarks
-    IO.puts("=" |> String.duplicate(70))
-    IO.puts("SINGLE-PROCESS BENCHMARKS")
-    IO.puts("=" |> String.duplicate(70))
+  defp run_sustained_load(users, split_names, worker_count, duration_s) do
+    users_tuple = List.to_tuple(users)
+    split_names_tuple = List.to_tuple(split_names)
+    batch_groups_tuple = split_names |> Enum.chunk_every(5, 5, :discard) |> List.to_tuple()
 
-    Benchee.run(
-      %{
-        "get_treatment (simple)" => fn ->
-          Splitio.get_treatment(Enum.random(user_keys), "feature_1")
-        end,
-        "get_treatment (segment)" => fn ->
-          Splitio.get_treatment(Enum.random(user_keys), "feature_4")
-        end,
-        "get_treatment (with attrs)" => fn ->
-          Splitio.get_treatment(Enum.random(user_keys), "feature_6", attrs_with_age)
-        end,
-        "get_treatment (random)" => fn ->
-          Splitio.get_treatment(Enum.random(user_keys), Enum.random(split_names))
-        end,
-        "get_treatments (10 splits)" => fn ->
-          Splitio.get_treatments(Enum.random(user_keys), batch_splits)
-        end,
-        "track" => fn ->
-          Splitio.track(Enum.random(user_keys), "user", "click")
-        end
-      },
-      warmup: 2,
-      time: 5,
-      print: [configuration: false]
-    )
-
-    # Multi-process benchmarks
-    IO.puts("\n")
-    IO.puts("=" |> String.duplicate(70))
-    IO.puts("MULTI-PROCESS BENCHMARKS (100 concurrent processes)")
-    IO.puts("=" |> String.duplicate(70))
-
-    Benchee.run(
-      %{
-        "get_treatment (100p)" => fn ->
-          tasks =
-            for _ <- 1..100 do
-              Task.async(fn ->
-                Splitio.get_treatment(Enum.random(user_keys), Enum.random(split_names))
-              end)
-            end
-
-          Task.await_many(tasks, 5000)
-        end,
-        "get_treatments x10 (100p)" => fn ->
-          tasks =
-            for _ <- 1..100 do
-              Task.async(fn ->
-                Splitio.get_treatments(Enum.random(user_keys), batch_splits)
-              end)
-            end
-
-          Task.await_many(tasks, 5000)
-        end
-      },
-      warmup: 1,
-      time: 3,
-      print: [configuration: false]
-    )
-
-    # Sustained load
-    IO.puts("\n")
-    sustained_result = run_sustained_only(Keyword.merge([duration: 10, processes: 100], opts))
-
-    %{
-      type: :full,
-      sustained: sustained_result,
-      impressions_mode: opts[:impressions] || "optimized"
+    counters = %{
+      total_ops: :atomics.new(1, signed: false),
+      errors: :atomics.new(1, signed: false),
+      get_treatment_ops: :atomics.new(1, signed: false),
+      get_treatments_ops: :atomics.new(1, signed: false),
+      track_ops: :atomics.new(1, signed: false)
     }
-  end
 
-  defp run_sustained_only(opts) do
-    duration_s = opts[:duration] || 10
-    num_processes = opts[:processes] || 100
-
-    IO.puts("Running sustained load test...")
-    IO.puts("  Processes: #{num_processes}")
-    IO.puts("  Duration: #{duration_s}s\n")
-
-    user_keys = Splitio.Bench.Fixtures.user_keys(10_000)
-    split_names = for i <- 1..100, do: "feature_#{i}"
-
-    {time_us, {total_ops, errors}} =
-      :timer.tc(fn ->
-        run_sustained_test(user_keys, split_names, num_processes, duration_s * 1000)
-      end)
-
-    time_s = time_us / 1_000_000
-    ops_per_second = total_ops / time_s
-
-    IO.puts("\nResults:")
-    IO.puts("  Duration: #{Float.round(time_s, 2)}s")
-    IO.puts("  Total operations: #{total_ops}")
-    IO.puts("  Errors: #{errors}")
-    IO.puts("  Throughput: #{Float.round(ops_per_second, 0)} ops/sec")
-    IO.puts("  Per process: #{Float.round(ops_per_second / num_processes, 0)} ops/sec")
-
-    %{
-      ops_per_second: ops_per_second,
-      total_ops: total_ops,
-      errors: errors,
-      duration_s: time_s,
-      impressions_mode: Application.get_env(:splitio, :impressions_mode, :optimized)
-    }
-  end
-
-  defp run_sustained_test(user_keys, split_names, num_processes, duration_ms) do
-    ops_counter = :atomics.new(1, signed: false)
-    error_counter = :atomics.new(1, signed: false)
-    stop_flag = :atomics.new(1, signed: false)
+    stop_ref = make_ref()
+    parent = self()
 
     workers =
-      for _ <- 1..num_processes do
-        spawn_link(fn ->
-          worker_loop(user_keys, split_names, ops_counter, error_counter, stop_flag)
+      for worker_id <- 0..(worker_count - 1) do
+        Task.Supervisor.start_child(Splitio.Bench.TaskSupervisor, fn ->
+          worker_loop(
+            parent,
+            stop_ref,
+            worker_id,
+            users_tuple,
+            split_names_tuple,
+            batch_groups_tuple,
+            counters
+          )
         end)
       end
 
-    Process.sleep(duration_ms)
-    :atomics.put(stop_flag, 1, 1)
-    Process.sleep(100)
+    worker_pids = Enum.map(workers, fn {:ok, pid} -> pid end)
 
-    Enum.each(workers, fn pid ->
-      Process.exit(pid, :shutdown)
-    end)
+    started_at = System.monotonic_time(:microsecond)
+    Process.sleep(duration_s * 1_000)
+    Enum.each(worker_pids, &send(&1, stop_ref))
+    await_workers(worker_pids)
+    ended_at = System.monotonic_time(:microsecond)
 
-    {:atomics.get(ops_counter, 1), :atomics.get(error_counter, 1)}
+    elapsed_s = (ended_at - started_at) / 1_000_000
+    total_ops = :atomics.get(counters.total_ops, 1)
+    errors = :atomics.get(counters.errors, 1)
+
+    %{
+      duration_s: Float.round(elapsed_s, 2),
+      workers: worker_count,
+      total_ops: total_ops,
+      ops_per_second: total_ops / elapsed_s,
+      errors: errors,
+      operation_mix: %{
+        get_treatment: :atomics.get(counters.get_treatment_ops, 1),
+        get_treatments: :atomics.get(counters.get_treatments_ops, 1),
+        track: :atomics.get(counters.track_ops, 1)
+      }
+    }
   end
 
-  defp worker_loop(user_keys, split_names, ops_counter, error_counter, stop_flag) do
-    if :atomics.get(stop_flag, 1) == 0 do
-      key = Enum.random(user_keys)
-      split = Enum.random(split_names)
+  defp worker_loop(parent, stop_ref, worker_id, users, split_names, batch_groups, counters) do
+    Process.flag(:trap_exit, true)
 
-      try do
-        Splitio.get_treatment(key, split)
-        :atomics.add(ops_counter, 1, 1)
-      rescue
-        _ -> :atomics.add(error_counter, 1, 1)
-      end
+    do_worker_loop(
+      parent,
+      stop_ref,
+      worker_id,
+      users,
+      split_names,
+      batch_groups,
+      counters,
+      worker_id
+    )
+  end
 
-      worker_loop(user_keys, split_names, ops_counter, error_counter, stop_flag)
+  defp do_worker_loop(
+         parent,
+         stop_ref,
+         worker_id,
+         users,
+         split_names,
+         batch_groups,
+         counters,
+         iteration
+       ) do
+    receive do
+      ^stop_ref ->
+        send(parent, {:worker_done, self()})
+
+      {:EXIT, _pid, _reason} ->
+        send(parent, {:worker_done, self()})
+    after
+      0 ->
+        user = elem(users, rem(iteration, tuple_size(users)))
+        split_name = elem(split_names, rem(iteration + worker_id, tuple_size(split_names)))
+        attrs = if(rem(iteration, 3) == 0, do: user.attrs, else: %{})
+
+        try do
+          case rem(iteration, 10) do
+            selector when selector in [0, 1] ->
+              batch = elem(batch_groups, rem(iteration, tuple_size(batch_groups)))
+              _ = Splitio.get_treatments(user.key, batch, attrs)
+              incr(counters.get_treatments_ops)
+
+            2 ->
+              tracked? =
+                Splitio.track(
+                  user.key,
+                  "user",
+                  "load_test_event",
+                  rem(iteration, 100),
+                  %{"worker" => worker_id}
+                )
+
+              if tracked? do
+                incr(counters.track_ops)
+              else
+                incr(counters.errors)
+              end
+
+            _ ->
+              _ = Splitio.get_treatment(user.key, split_name, attrs)
+              incr(counters.get_treatment_ops)
+          end
+
+          incr(counters.total_ops)
+        rescue
+          _ ->
+            incr(counters.errors)
+        end
+
+        do_worker_loop(
+          parent,
+          stop_ref,
+          worker_id,
+          users,
+          split_names,
+          batch_groups,
+          counters,
+          iteration + 1
+        )
     end
   end
 
-  defp check_thresholds(result, opts) do
-    thresholds_file = "bench/thresholds.json"
+  defp await_workers([]), do: :ok
 
-    unless File.exists?(thresholds_file) do
-      IO.puts("\nWarning: #{thresholds_file} not found, skipping threshold check")
+  defp await_workers(worker_pids) do
+    receive do
+      {:worker_done, pid} ->
+        await_workers(List.delete(worker_pids, pid))
+    after
+      5_000 ->
+        Enum.each(worker_pids, &Process.exit(&1, :kill))
+        :ok
+    end
+  end
+
+  defp flush_recorders do
+    safe_flush(Splitio.Recorder.Impressions)
+    safe_flush(Splitio.Recorder.Events)
+    safe_flush(Splitio.Recorder.ImpressionCounts)
+  end
+
+  defp safe_flush(module) do
+    if Process.whereis(module) do
+      apply(module, :flush, [])
+    end
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp write_outputs(result, opts) do
+    if path = opts[:json_output] do
+      write_file(path, Jason.encode_to_iodata!(result, pretty: true))
+    end
+
+    if path = opts[:markdown_output] do
+      write_file(path, markdown_summary(result))
+    end
+
+    if opts[:json_output] || opts[:markdown_output] do
+      :ok
+    else
+      IO.puts(markdown_summary(result))
+    end
+  end
+
+  defp write_file(path, contents) do
+    path |> Path.dirname() |> File.mkdir_p!()
+    File.write!(path, contents)
+  end
+
+  defp markdown_summary(result) do
+    """
+    ## #{String.upcase(result.mode)} Load Test
+
+    | Metric | Value |
+    | --- | ---: |
+    | Bootstrap to ready | #{result.bootstrap.ready_ms} ms |
+    | Split fetches | #{result.bootstrap.split_fetches} |
+    | Segment fetches | #{result.bootstrap.segment_fetches} |
+    | Duration | #{result.sustained.duration_s} s |
+    | Workers | #{result.sustained.workers} |
+    | Total operations | #{result.sustained.total_ops} |
+    | Throughput | #{Float.round(result.sustained.ops_per_second, 0)} ops/sec |
+    | Errors | #{result.sustained.errors} |
+
+    ### Operation Mix
+
+    | Operation | Calls |
+    | --- | ---: |
+    | `get_treatment` | #{result.sustained.operation_mix.get_treatment} |
+    | `get_treatments` | #{result.sustained.operation_mix.get_treatments} |
+    | `track` | #{result.sustained.operation_mix.track} |
+
+    ### Mocked Network Activity
+
+    | Endpoint | Requests | Items |
+    | --- | ---: | ---: |
+    | `/splitChanges` | #{result.mock.split_fetches} | - |
+    | `/segmentChanges/*` | #{result.mock.segment_fetches} | - |
+    | `/events/bulk` | #{result.mock.event_posts} | #{result.mock.event_items} |
+    | `/testImpressions/bulk` | #{result.mock.impression_posts} | #{result.mock.impression_items} |
+    | `/testImpressions/count` | #{result.mock.impression_count_posts} | #{result.mock.impression_count_items} |
+    | `/keys/ss` | #{result.mock.unique_key_posts} | #{result.mock.unique_key_items} |
+    """
+  end
+
+  defp check_thresholds!(result) do
+    unless File.exists?(@thresholds_file) do
+      IO.puts("Warning: #{@thresholds_file} not found, skipping threshold check")
       System.halt(0)
     end
 
-    thresholds = thresholds_file |> File.read!() |> Jason.decode!()
-
-    IO.puts("\n")
-    IO.puts("=" |> String.duplicate(70))
-    IO.puts("THRESHOLD CHECK")
-    IO.puts("=" |> String.duplicate(70))
-
-    failures = check_sustained_threshold(result, thresholds, opts)
+    thresholds = @thresholds_file |> File.read!() |> Jason.decode!()
+    failures = threshold_failures(result, thresholds)
 
     if failures == [] do
-      IO.puts("\nAll thresholds PASSED")
+      IO.puts("Threshold check passed")
       System.halt(0)
     else
-      IO.puts("\nThreshold FAILURES:")
-      Enum.each(failures, fn f -> IO.puts("  - #{f}") end)
+      IO.puts("Threshold check failed:")
+      Enum.each(failures, &IO.puts("  - #{&1}"))
       System.halt(1)
     end
   end
 
-  defp check_sustained_threshold(result, thresholds, opts) do
-    case result do
-      %{sustained: sustained} when is_map(sustained) ->
-        check_sustained_result(sustained, thresholds)
+  defp threshold_failures(result, thresholds) do
+    mode_thresholds = get_in(thresholds, ["runtime", result.mode]) || %{}
 
-      %{type: :sustained, ops_per_second: ops} ->
-        impressions_mode = opts[:impressions] || "optimized"
-        check_sustained_ops(ops, impressions_mode, thresholds)
-
-      _ ->
-        []
-    end
+    []
+    |> maybe_fail(
+      result.bootstrap.ready_ms <= get_in(thresholds, ["bootstrap", "max_ready_ms"]),
+      "bootstrap ready time #{result.bootstrap.ready_ms}ms exceeded max #{get_in(thresholds, ["bootstrap", "max_ready_ms"])}ms"
+    )
+    |> maybe_fail(
+      result.bootstrap.split_fetches >= get_in(thresholds, ["bootstrap", "min_split_fetches"]),
+      "expected at least #{get_in(thresholds, ["bootstrap", "min_split_fetches"])} split fetch"
+    )
+    |> maybe_fail(
+      result.sustained.ops_per_second >= Map.get(mode_thresholds, "min_ops_sec", 0),
+      "throughput #{Float.round(result.sustained.ops_per_second, 0)} ops/sec below #{Map.get(mode_thresholds, "min_ops_sec", 0)}"
+    )
+    |> maybe_fail(
+      result.sustained.errors <= Map.get(mode_thresholds, "max_errors", 0),
+      "errors #{result.sustained.errors} exceeded #{Map.get(mode_thresholds, "max_errors", 0)}"
+    )
+    |> maybe_fail(
+      result.mock.event_posts >= Map.get(mode_thresholds, "min_event_posts", 0),
+      "event flushes #{result.mock.event_posts} below #{Map.get(mode_thresholds, "min_event_posts", 0)}"
+    )
+    |> maybe_fail(
+      result.mock.impression_posts >= Map.get(mode_thresholds, "min_impression_posts", 0),
+      "impression flushes #{result.mock.impression_posts} below #{Map.get(mode_thresholds, "min_impression_posts", 0)}"
+    )
+    |> maybe_fail(
+      result.mock.impression_posts <=
+        Map.get(mode_thresholds, "max_impression_posts", result.mock.impression_posts),
+      "impression flushes #{result.mock.impression_posts} exceeded #{Map.get(mode_thresholds, "max_impression_posts", result.mock.impression_posts)}"
+    )
+    |> maybe_fail(
+      result.mock.impression_count_posts >=
+        Map.get(mode_thresholds, "min_impression_count_posts", 0),
+      "impression count flushes #{result.mock.impression_count_posts} below #{Map.get(mode_thresholds, "min_impression_count_posts", 0)}"
+    )
+    |> maybe_fail(
+      result.mock.post_failures <= Map.get(mode_thresholds, "max_post_failures", 0),
+      "mock post failures #{result.mock.post_failures} exceeded #{Map.get(mode_thresholds, "max_post_failures", 0)}"
+    )
   end
 
-  defp check_sustained_result(%{ops_per_second: ops, impressions_mode: mode}, thresholds) do
-    mode_str = to_string(mode)
-    check_sustained_ops(ops, mode_str, thresholds)
-  end
+  defp maybe_fail(failures, true, _message), do: failures
+  defp maybe_fail(failures, false, message), do: [message | failures]
 
-  defp check_sustained_ops(ops, mode_str, thresholds) do
-    threshold_key =
-      case mode_str do
-        "none" -> "impressions_none"
-        _ -> "impressions_optimized"
-      end
+  defp parse_impressions_mode("none"), do: :none
+  defp parse_impressions_mode("debug"), do: :debug
+  defp parse_impressions_mode(_), do: :optimized
 
-    case get_in(thresholds, ["sustained_100p", threshold_key, "min_total_ops_sec"]) do
-      nil ->
-        IO.puts("  No threshold defined for sustained_100p.#{threshold_key}")
-        []
-
-      min_ops ->
-        if ops >= min_ops do
-          IO.puts(
-            "  sustained (#{threshold_key}): #{Float.round(ops, 0)} ops/sec >= #{min_ops} PASS"
-          )
-
-          []
-        else
-          IO.puts(
-            "  sustained (#{threshold_key}): #{Float.round(ops, 0)} ops/sec < #{min_ops} FAIL"
-          )
-
-          ["sustained #{threshold_key}: #{Float.round(ops, 0)} < #{min_ops}"]
-        end
-    end
+  defp incr(counter) do
+    :atomics.add(counter, 1, 1)
   end
 end

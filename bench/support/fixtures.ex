@@ -1,101 +1,121 @@
 defmodule Splitio.Bench.Fixtures do
   @moduledoc """
-  Generates realistic split/segment data for load testing.
+  Generates realistic split and segment payloads for load testing.
+
+  These fixtures are served through the mocked HTTP boundary so the SDK
+  bootstraps through normal sync code paths instead of seeding ETS directly.
   """
 
-  alias Splitio.Models.Split
-  alias Splitio.Storage
+  @default_change_number 1_904_067_200_000
 
   @doc """
-  Populate storage with realistic test data.
-
-  Options:
-  - `:num_splits` - Number of feature flags (default: 100)
-  - `:num_segments` - Number of segments (default: 10)
-  - `:segment_size` - Keys per segment (default: 1000)
+  Build a dataset consumable by `Splitio.Bench.MockServer`.
   """
-  def populate(opts \\ []) do
-    num_splits = Keyword.get(opts, :num_splits, 100)
-    num_segments = Keyword.get(opts, :num_segments, 10)
-    segment_size = Keyword.get(opts, :segment_size, 1000)
+  def dataset(opts \\ []) do
+    num_splits = Keyword.get(opts, :num_splits, 120)
+    num_segments = Keyword.get(opts, :num_segments, 12)
+    segment_size = Keyword.get(opts, :segment_size, 1_500)
+    change_number = Keyword.get(opts, :change_number, @default_change_number)
 
-    # Create segments first (splits may reference them)
-    segments = create_segments(num_segments, segment_size)
+    segments = create_segments(num_segments, segment_size, change_number)
     segment_names = Enum.map(segments, & &1.name)
+    splits = create_splits(num_splits, segment_names, change_number)
 
-    # Create splits with various matcher types
-    create_splits(num_splits, segment_names)
-
-    :ok
+    %{
+      change_number: change_number,
+      splits: splits,
+      split_names: Enum.map(splits, & &1["name"]),
+      segment_changes: Map.new(segments, &{&1.name, &1.response})
+    }
   end
 
-  @doc "Generate random user keys for testing"
+  @doc """
+  Deterministic user contexts used by the sustained workload.
+  """
+  def workload_users(count) do
+    now_ms = System.system_time(:millisecond)
+
+    for i <- 1..count do
+      %{
+        key: user_key(i),
+        attrs: %{
+          "age" => 16 + rem(i, 55),
+          "tags" => tags_for(i),
+          "created_at" => now_ms - rem(i * 13_000, 90_000_000),
+          "plan" => if(rem(i, 4) == 0, do: "premium_#{rem(i, 20)}", else: "basic_#{rem(i, 20)}")
+        }
+      }
+    end
+  end
+
+  @doc "Generate user keys for the workload."
   def user_keys(count) do
-    for i <- 1..count, do: "user_#{i}"
+    for i <- 1..count, do: user_key(i)
   end
 
-  @doc "Get a random user key"
-  def random_user_key(max \\ 10_000) do
-    "user_#{:rand.uniform(max)}"
-  end
+  defp user_key(i), do: "user_#{i}"
 
-  # ============================================================================
-  # Private
-  # ============================================================================
+  defp tags_for(i) when rem(i, 5) == 0, do: ["a", "b", "c"]
+  defp tags_for(i) when rem(i, 3) == 0, do: ["a", "b"]
+  defp tags_for(_i), do: ["a"]
 
-  defp create_segments(num_segments, segment_size) do
+  defp create_segments(num_segments, segment_size, change_number) do
     for i <- 1..num_segments do
       name = "segment_#{i}"
-      keys = for j <- 1..segment_size, do: "user_#{j}"
 
-      Storage.update_segment(name, keys, [], i * 1000)
-      %{name: name, keys: keys}
+      keys =
+        for j <- 1..segment_size do
+          user_key(((i - 1) * segment_size) + j)
+        end
+
+      %{
+        name: name,
+        response: %{
+          "name" => name,
+          "added" => keys,
+          "removed" => [],
+          "since" => -1,
+          "till" => change_number
+        }
+      }
     end
   end
 
-  defp create_splits(num_splits, segment_names) do
+  defp create_splits(num_splits, segment_names, change_number) do
     for i <- 1..num_splits do
-      split = generate_split(i, segment_names)
-      Storage.put_split(split)
+      generate_split(i, segment_names, change_number)
     end
   end
 
-  defp generate_split(index, segment_names) do
-    # Distribute different matcher types across splits
-    type = rem(index, 10)
+  defp generate_split(index, segment_names, change_number) do
     name = "feature_#{index}"
 
-    json =
-      case type do
-        0 -> simple_rollout_split(name)
-        1 -> percentage_rollout_split(name, 50)
-        2 -> whitelist_split(name, ["user_1", "user_2", "user_3"])
-        3 -> segment_split(name, Enum.at(segment_names, rem(index, length(segment_names))))
-        4 -> string_matcher_split(name, :starts_with, "premium")
-        5 -> number_matcher_split(name, :between, 18, 65)
-        6 -> set_matcher_split(name, :contains_all, ["a", "b"])
-        7 -> date_matcher_split(name)
-        8 -> killed_split(name)
-        9 -> multi_condition_split(name, segment_names)
-        _ -> simple_rollout_split(name)
-      end
-
-    {:ok, split} = Split.from_json(json)
-    split
+    case rem(index, 10) do
+      0 -> simple_rollout_split(name, change_number)
+      1 -> percentage_rollout_split(name, 50, change_number)
+      2 -> whitelist_split(name, [user_key(1), user_key(2), user_key(3)], change_number)
+      3 -> segment_split(name, Enum.at(segment_names, rem(index, length(segment_names))), change_number)
+      4 -> string_matcher_split(name, :starts_with, "premium", change_number)
+      5 -> number_matcher_split(name, :between, 18, 65, change_number)
+      6 -> set_matcher_split(name, :contains_all, ["a", "b"], change_number)
+      7 -> date_matcher_split(name, change_number)
+      8 -> killed_split(name, change_number)
+      9 -> multi_condition_split(name, segment_names, change_number)
+    end
   end
 
-  defp simple_rollout_split(name) do
+  defp simple_rollout_split(name, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{"on" => ~s({"enabled":true})},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -114,18 +134,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp percentage_rollout_split(name, percentage) do
+  defp percentage_rollout_split(name, percentage, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -147,18 +167,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp whitelist_split(name, whitelist) do
+  defp whitelist_split(name, whitelist, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -192,18 +212,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp segment_split(name, segment_name) do
+  defp segment_split(name, segment_name, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -237,18 +257,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp string_matcher_split(name, :starts_with, prefix) do
+  defp string_matcher_split(name, :starts_with, prefix, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -282,18 +302,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp number_matcher_split(name, :between, min, max) do
+  defp number_matcher_split(name, :between, min, max, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -328,18 +348,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp set_matcher_split(name, :contains_all, values) do
+  defp set_matcher_split(name, :contains_all, values, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -374,8 +394,7 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp date_matcher_split(name) do
-    # Match dates >= 2020-01-01 (using supported GREATER_THAN_OR_EQUAL_TO)
+  defp date_matcher_split(name, change_number) do
     timestamp = 1_577_836_800_000
 
     %{
@@ -384,11 +403,11 @@ defmodule Splitio.Bench.Fixtures do
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -423,18 +442,18 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp killed_split(name) do
+  defp killed_split(name, change_number) do
     %{
       "name" => name,
       "trafficTypeName" => "user",
       "killed" => true,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
@@ -443,7 +462,7 @@ defmodule Splitio.Bench.Fixtures do
     }
   end
 
-  defp multi_condition_split(name, segment_names) do
+  defp multi_condition_split(name, segment_names, change_number) do
     segment_name = Enum.at(segment_names, 0, "segment_1")
 
     %{
@@ -452,17 +471,16 @@ defmodule Splitio.Bench.Fixtures do
       "killed" => false,
       "status" => "ACTIVE",
       "defaultTreatment" => "off",
-      "changeNumber" => 1_000_000,
+      "changeNumber" => change_number,
       "algo" => 2,
       "trafficAllocation" => 100,
-      "trafficAllocationSeed" => :rand.uniform(1_000_000),
-      "seed" => :rand.uniform(1_000_000),
+      "trafficAllocationSeed" => seed(),
+      "seed" => seed(),
       "configurations" => %{},
       "sets" => [],
       "impressionsDisabled" => false,
       "prerequisites" => [],
       "conditions" => [
-        # First condition: in segment AND age >= 18
         %{
           "conditionType" => "ROLLOUT",
           "matcherGroup" => %{
@@ -484,7 +502,6 @@ defmodule Splitio.Bench.Fixtures do
           "partitions" => [%{"treatment" => "variant_a", "size" => 100}],
           "label" => "segment + age >= 18"
         },
-        # Second condition: starts with "vip"
         %{
           "conditionType" => "ROLLOUT",
           "matcherGroup" => %{
@@ -500,7 +517,6 @@ defmodule Splitio.Bench.Fixtures do
           "partitions" => [%{"treatment" => "variant_b", "size" => 100}],
           "label" => "vip users"
         },
-        # Default
         %{
           "conditionType" => "ROLLOUT",
           "matcherGroup" => %{
@@ -513,4 +529,6 @@ defmodule Splitio.Bench.Fixtures do
       ]
     }
   end
+
+  defp seed, do: :rand.uniform(1_000_000)
 end
