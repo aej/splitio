@@ -86,6 +86,7 @@ defmodule Splitio do
         Application.put_env(:splitio, :config, config)
 
         children = [
+          {Finch, name: Splitio.Api.HTTP.Tesla.finch_name()},
           Splitio.Storage.TableOwner,
           {Splitio.Impressions.Counter, []},
           {Splitio.Recorder.Impressions, config},

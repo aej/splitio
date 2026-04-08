@@ -438,30 +438,53 @@ defmodule Splitio.Integration.AdminApi do
   end
 
   defp request(method, client, url, body) do
+    ensure_finch_started!()
+
     headers = [
       {"Authorization", "Bearer #{client.admin_key}"},
       {"Content-Type", "application/json"}
     ]
 
-    opts = [headers: headers]
+    tesla =
+      Tesla.client(
+        [{Tesla.Middleware.JSON, engine: Jason}],
+        {Tesla.Adapter.Finch, name: finch_name()}
+      )
+
+    opts = [headers: headers, opts: [adapter: [receive_timeout: 60_000, pool_timeout: 10_000]]]
 
     result =
       case method do
-        :get -> Req.get(url, opts)
-        :post -> Req.post(url, Keyword.put(opts, :json, body))
-        :put -> Req.put(url, Keyword.put(opts, :json, body))
-        :delete -> Req.delete(url, opts)
+        :get -> Tesla.get(tesla, url, opts)
+        :post -> Tesla.post(tesla, url, body, opts)
+        :put -> Tesla.put(tesla, url, body, opts)
+        :delete -> Tesla.delete(tesla, url, opts)
       end
 
     case result do
-      {:ok, %{status: status} = resp} when status in 200..299 ->
+      {:ok, %Tesla.Env{status: status} = resp} when status in 200..299 ->
         {:ok, resp.body}
 
-      {:ok, %{status: status} = resp} ->
+      {:ok, %Tesla.Env{status: status} = resp} ->
         {:error, %{status: status, body: resp.body}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp finch_name, do: __MODULE__.Finch
+
+  defp ensure_finch_started! do
+    case Process.whereis(finch_name()) do
+      nil ->
+        case Finch.start_link(name: finch_name()) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+
+      _pid ->
+        :ok
     end
   end
 end

@@ -75,17 +75,7 @@ defmodule Splitio.Api.SDK do
   @spec download_file(String.t(), map()) :: {:ok, binary()} | {:error, term()}
   def download_file(url, headers \\ %{}) do
     header_list = Enum.map(headers, fn {k, v} -> {k, v} end)
-
-    case Req.get(url, headers: header_list) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
-        {:ok, body}
-
-      {:ok, %Req.Response{status: status}} ->
-        {:error, {:http_error, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    http_client().get(url, headers: header_list, decode_json: false)
   end
 
   defp maybe_add_param(query, _key, nil), do: query
@@ -94,4 +84,11 @@ defmodule Splitio.Api.SDK do
   defp format_sets(nil), do: nil
   defp format_sets([]), do: nil
   defp format_sets(sets), do: Enum.join(sets, ",")
+
+  defp http_client do
+    case Process.get(:splitio_http_client) do
+      nil -> Application.get_env(:splitio, :http_client, Splitio.Api.HTTP.Tesla)
+      client -> client
+    end
+  end
 end

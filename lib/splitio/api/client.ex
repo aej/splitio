@@ -2,7 +2,7 @@ defmodule Splitio.Api.Client do
   @moduledoc """
   HTTP client wrapper for Split API requests.
 
-  Routes through configurable HTTP backend (defaults to Req).
+  Routes through configurable HTTP backend (defaults to Tesla).
   """
 
   alias Splitio.Config
@@ -45,7 +45,7 @@ defmodule Splitio.Api.Client do
 
   defp http_client do
     case Process.get(:splitio_http_client) do
-      nil -> Application.get_env(:splitio, :http_client, Splitio.Api.HTTP.Req)
+      nil -> Application.get_env(:splitio, :http_client, Splitio.Api.HTTP.Tesla)
       client -> client
     end
   end
