@@ -29,6 +29,7 @@ defmodule Splitio.Storage.Backend do
   # Segments
   @callback get_segment(segment_name()) :: {:ok, Segment.t()} | :not_found
   @callback put_segment(Segment.t()) :: :ok
+  @callback delete_segment(segment_name()) :: :ok
   @callback segment_contains?(segment_name(), key :: String.t()) :: boolean()
   @callback get_segment_change_number(segment_name()) :: change_number()
   @callback set_segment_change_number(segment_name(), change_number()) :: :ok

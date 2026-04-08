@@ -32,7 +32,7 @@ defmodule Splitio.Push.Auth do
   end
 
   @doc "Get current auth token"
-  @spec get_token() :: {:ok, String.t(), [String.t()]} | {:error, term()}
+  @spec get_token() :: {:ok, String.t(), [String.t()]} | {:disabled, term()} | {:error, term()}
   def get_token do
     GenServer.call(__MODULE__, :get_token)
   end
@@ -68,7 +68,14 @@ defmodule Splitio.Push.Auth do
     if state.token && state.push_enabled do
       {:reply, {:ok, state.token, state.channels}, state}
     else
-      {:reply, {:error, :no_token}, state}
+      reply =
+        if state.push_enabled == false do
+          {:disabled, :push_disabled}
+        else
+          {:error, :no_token}
+        end
+
+      {:reply, reply, state}
     end
   end
 
@@ -135,21 +142,19 @@ defmodule Splitio.Push.Auth do
     # JWT is base64 encoded: header.payload.signature
     case String.split(token, ".") do
       [_header, payload, _sig] ->
-        case Base.decode64(payload, padding: false) do
-          {:ok, json} ->
-            case Jason.decode(json) do
-              {:ok, claims} ->
-                channels = parse_channels(claims["x-ably-capability"])
-                exp = claims["exp"]
-                expires_at = if exp, do: exp * 1000, else: nil
-                {channels, expires_at}
+        with {:ok, decoded} <- decode_base64url(payload) do
+          case Jason.decode(decoded) do
+            {:ok, claims} ->
+              channels = parse_channels(claims["x-ably-capability"])
+              exp = claims["exp"]
+              expires_at = if exp, do: exp * 1000, else: nil
+              {channels, expires_at}
 
-              _ ->
-                {[], nil}
-            end
-
-          _ ->
-            {[], nil}
+            _ ->
+              {[], nil}
+          end
+        else
+          _ -> {[], nil}
         end
 
       _ ->
@@ -184,5 +189,12 @@ defmodule Splitio.Push.Auth do
   defp cancel_refresh_timer(%{refresh_timer: timer} = state) do
     Process.cancel_timer(timer)
     %{state | refresh_timer: nil}
+  end
+
+  defp decode_base64url(value) do
+    case Base.url_decode64(value, padding: false) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> Base.decode64(value, padding: false)
+    end
   end
 end

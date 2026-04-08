@@ -8,9 +8,10 @@ Elixir SDK for [Split.io](https://split.io) feature flags with local evaluation.
 ## Features
 
 - Local evaluation of feature flags using cached data
-- Hybrid streaming (SSE) + polling synchronization
+- Streaming-first synchronization with polling fallback
 - Multiple operation modes: standalone and localhost
 - Impression deduplication and batched sending
+- NONE-mode unique key reporting
 - Support for all 23+ matcher types
 - OTP-based architecture with supervision trees
 
@@ -89,11 +90,15 @@ All options go under the `:splitio` application config:
 config :splitio,
   api_key: "your-sdk-key",
   mode: :standalone,              # :standalone | :localhost
-  streaming_enabled: true,        # Enable SSE streaming
+  streaming_enabled: true,        # Enable SSE streaming with polling fallback
   impressions_mode: :optimized,   # :optimized | :debug | :none
   features_refresh_rate: 30,      # Seconds between split fetches
   segments_refresh_rate: 60,      # Seconds between segment fetches
-  labels_enabled: true            # Include labels in impressions
+  labels_enabled: true,           # Include labels in impressions
+  segment_directory: nil,         # Localhost JSON segments directory
+  localhost_refresh_enabled: false,
+  impression_listener: nil,       # Optional callback for every generated impression
+  fallback_treatment: nil         # Optional fallback treatment config
 ```
 
 ### Localhost Mode
@@ -104,8 +109,8 @@ For development/testing without Split.io backend:
 # config/dev.exs
 config :splitio,
   api_key: "localhost",
-  mode: :localhost,
-  split_file: "config/splits.yaml"
+  split_file: "config/splits.yaml",
+  localhost_refresh_enabled: true
 ```
 
 YAML format:
@@ -116,6 +121,73 @@ YAML format:
     keys:
       - user123
       - user456
+```
+
+JSON localhost mode also supports external segment files:
+
+```elixir
+config :splitio,
+  api_key: "localhost",
+  split_file: "config/splits.json",
+  segment_directory: "config/segments",
+  localhost_refresh_enabled: true
+```
+
+### Lifecycle
+
+```elixir
+# Wait until definitions are available
+:ok = Splitio.block_until_ready(10_000)
+
+# Or through the manager facade
+:ok = Splitio.Manager.block_until_ready(10_000)
+
+# Flush pending events/impressions and stop the SDK
+:ok = Splitio.destroy()
+```
+
+### SDK Events
+
+```elixir
+{:ok, _handler} =
+  Splitio.on(:sdk_ready, fn _metadata ->
+    IO.puts("Split SDK is ready")
+  end)
+
+{:ok, _handler} =
+  Splitio.on(:sdk_update, fn metadata ->
+    IO.inspect(metadata, label: "Split SDK update")
+  end)
+```
+
+### Impression Listener
+
+You can attach a callback that receives every generated impression, including ones
+that are deduplicated locally in `:optimized` mode or suppressed from network
+delivery in `:none` mode.
+
+```elixir
+config :splitio,
+  api_key: "your-sdk-key",
+  impression_listener: fn %{impression: impression, attributes: attributes} ->
+    IO.inspect({impression.feature, impression.treatment, attributes})
+  end
+```
+
+### Fallback Treatments
+
+When a flag cannot be evaluated, the SDK returns `control` by default. You can
+override that globally or per flag:
+
+```elixir
+config :splitio,
+  api_key: "your-sdk-key",
+  fallback_treatment: %{
+    global: %{treatment: "off", config: %{source: "fallback"}},
+    by_flag: %{
+      "checkout_redesign" => %{treatment: "safe_off"}
+    }
+  }
 ```
 
 ## Manager API

@@ -52,6 +52,7 @@ defmodule Splitio.Push.Processor do
 
         if config do
           Splits.sync_to(config, event.change_number)
+          :telemetry.execute([:splitio, :sdk, :update], %{}, %{type: :split_update})
         end
     end
 
@@ -85,6 +86,7 @@ defmodule Splitio.Push.Processor do
 
       if config do
         Segments.sync_segment_to(config, event.segment_name, event.change_number)
+        :telemetry.execute([:splitio, :sdk, :update], %{}, %{type: :segment_update})
       end
     end
 
@@ -102,6 +104,7 @@ defmodule Splitio.Push.Processor do
 
       if config do
         Splits.sync(config)
+        :telemetry.execute([:splitio, :sdk, :update], %{}, %{type: :rule_based_segment_update})
       end
     end
 
@@ -115,6 +118,7 @@ defmodule Splitio.Push.Processor do
 
     if config do
       LargeSegments.sync_large_segment(config, event.name)
+      :telemetry.execute([:splitio, :sdk, :update], %{}, %{type: :large_segment_update})
     end
 
     :ok
